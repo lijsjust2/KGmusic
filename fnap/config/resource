@@ -2,7 +2,7 @@
   "docker-project": {
     "projects": [
       {
-        "name": "kgconcept",
+        "name": "kgmusic",
         "path": "docker"
       }
     ]
@@ -10,10 +10,10 @@
   "data-share": {
     "shares": [
       {
-        "name": "KGconcept"
+        "name": "KGmusic"
       },
       {
-        "name": "KGconcept/downloads"
+        "name": "KGmusic/downloads"
       }
     ]
   },

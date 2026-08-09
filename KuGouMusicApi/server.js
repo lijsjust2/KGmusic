@@ -137,280 +137,14 @@ async function consturctServer(moduleDefs) {
   // ==================== 飞牛 fnOS 环境接口 ====================
   const FNOS_ENV = process.env.FNOS_ENV === 'true';
   const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || '';
-  const APP_NAME = process.env.APP_NAME || 'KGconcept';
-
-  // TRIM API token 路径（飞牛自动注入，通过 docker-compose 挂载）
-  const TRIM_TOKEN_PATHS = [
-    '/var/apps/KGconcept/.trim_token',
-  ];
-  let cachedTrimToken = '';
-  let cachedTrimTokenMtime = 0;
-
-  const readTrimToken = () => {
-    for (const tp of TRIM_TOKEN_PATHS) {
-      try {
-        const stat = fs.statSync(tp);
-        const mtime = stat.mtimeMs;
-        if (mtime !== cachedTrimTokenMtime || !cachedTrimToken) {
-          const content = fs.readFileSync(tp, 'utf-8').trim();
-          if (content) {
-            cachedTrimToken = content;
-            cachedTrimTokenMtime = mtime;
-          }
-        }
-        if (cachedTrimToken) return cachedTrimToken;
-      } catch (_) {}
-    }
-    // 回退：尝试从环境变量读取
-    const envToken = process.env.TRIM_API_TOKEN || '';
-    if (envToken) return envToken.trim();
-    return '';
-  };
-
-  // 用户选择的下载目录（容器内路径），默认使用 DOWNLOAD_DIR
-  let selectedDownloadFolder = DOWNLOAD_DIR;
-  const selectedDownloadFolderNames = {
-    [DOWNLOAD_DIR]: `${APP_NAME}/downloads`
-  };
 
   // 飞牛环境状态查询
   app.get('/fnos/status', (req, res) => {
     res.json({
       isFnos: FNOS_ENV,
       downloadDir: DOWNLOAD_DIR,
-      selectedDownloadDir: selectedDownloadFolder,
-      selectedDownloadName: selectedDownloadFolderNames[selectedDownloadFolder] || '',
       enabled: FNOS_ENV && !!DOWNLOAD_DIR,
     });
-  });
-
-  // 宿主机路径 → 容器路径 映射表
-  // key: 宿主机路径前缀, value: 容器路径前缀
-  const HOST_TO_CONTAINER = [
-    { host: '/var/apps/KGconcept/shares/KGconcept/downloads', container: '/app/downloads' },
-    { host: '/var/apps/KGconcept/shares/KGconcept', container: '/app/shares/KGconcept' },
-    { host: '/vol1', container: '/vol1' },
-  ];
-
-  // 将宿主机路径转换为容器内路径
-  const hostToContainerPath = (hostPath) => {
-    if (!hostPath) return hostPath;
-    for (const { host, container } of HOST_TO_CONTAINER) {
-      if (hostPath === host || hostPath.startsWith(host + '/')) {
-        return container + hostPath.slice(host.length);
-      }
-    }
-    // 已经是容器路径（如 /app/...）直接返回
-    if (hostPath.startsWith('/app/') || hostPath.startsWith('/var/apps/')) {
-      return hostPath;
-    }
-    return hostPath;
-  };
-
-  // 获取授权访问的共享目录列表（TRIM API + 文件系统扫描）
-  app.get('/fnos/shared-folders', async (req, res) => {
-    if (!FNOS_ENV) {
-      return res.json({ code: 0, data: { folders: [], currentFolder: DOWNLOAD_DIR } });
-    }
-    try {
-      const folders = [];
-      const seen = new Set();
-
-      // ===== 1. 容器内已挂载的默认共享目录 =====
-      // DOWNLOAD_DIR = /app/downloads (已挂载自 KGconcept/downloads)
-      const defaultContainerPaths = [
-        { container: '/app/downloads', name: 'KGconcept/downloads', source: 'default' },
-        { container: '/app/shares/KGconcept', name: 'KGconcept', source: 'default' },
-      ];
-      for (const entry of defaultContainerPaths) {
-        try {
-          fs.accessSync(entry.container);
-          let writable = false;
-          try {
-            fs.accessSync(entry.container, fs.constants.W_OK);
-            writable = true;
-          } catch (_) {}
-          folders.push({
-            name: entry.name,
-            path: entry.container,
-            writable,
-            source: entry.source,
-          });
-          seen.add(entry.container);
-          console.log(`[FNOS] 默认目录: ${entry.container} writable=${writable}`);
-        } catch (_) {
-          console.log(`[FNOS] 默认目录不存在: ${entry.container}`);
-        }
-      }
-
-      // ===== 2. 扫描 /app/shares/KGconcept 下的子目录 =====
-      try {
-        const sharesDir = '/app/shares/KGconcept';
-        const entries = fs.readdirSync(sharesDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (entry.isDirectory()) {
-            const containerPath = path.join(sharesDir, entry.name);
-            if (seen.has(containerPath)) continue;
-            let writable = false;
-            try {
-              fs.accessSync(containerPath, fs.constants.W_OK);
-              writable = true;
-            } catch (_) {}
-            folders.push({
-              name: `KGconcept/${entry.name}`,
-              path: containerPath,
-              writable,
-              source: 'default',
-            });
-            seen.add(containerPath);
-          }
-        }
-      } catch (_) {}
-
-      // ===== 3. TRIM API 获取授权文件夹 =====
-      const token = readTrimToken();
-      console.log(`[FNOS] TRIM token: ${token ? '已获取' : '未获取'}`);
-      if (token) {
-        try {
-          const trimRes = await axios.post(
-            'https://trim.fnnas.com/api/trim.file.sharedAccess',
-            {},
-            {
-              headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json',
-              },
-              timeout: 10000,
-            }
-          );
-          console.log(`[FNOS] TRIM API 响应: code=${trimRes.data?.code}, data count=${Array.isArray(trimRes.data?.data) ? trimRes.data.data.length : 'N/A'}`);
-          if (trimRes.data && trimRes.data.code === 0 && Array.isArray(trimRes.data.data)) {
-            for (const item of trimRes.data.data) {
-              const hostPath = item.path || item.folder_path || item.file_path || '';
-              const folderName = item.name || item.folder_name || hostPath;
-              if (!hostPath) continue;
-              const containerPath = hostToContainerPath(hostPath);
-              if (seen.has(containerPath)) continue;
-              // 检查容器内是否存在且可写
-              let exists = false;
-              let writable = false;
-              try {
-                fs.accessSync(containerPath);
-                exists = true;
-                fs.accessSync(containerPath, fs.constants.W_OK);
-                writable = true;
-              } catch (_) {}
-              console.log(`[FNOS] TRIM目录: host=${hostPath} → container=${containerPath} exists=${exists} writable=${writable}`);
-              if (exists) {
-                folders.push({
-                  name: folderName || hostPath,
-                  path: containerPath,
-                  writable,
-                  source: 'trim',
-                });
-                seen.add(containerPath);
-              } else {
-                // 目录不存在可能是挂载问题，仍然列出让用户看到
-                folders.push({
-                  name: folderName || hostPath,
-                  path: containerPath,
-                  writable: false,
-                  source: 'trim',
-                });
-                seen.add(containerPath);
-              }
-            }
-          }
-        } catch (e) {
-          console.warn('[FNOS] TRIM API 获取共享目录失败:', e.message);
-        }
-      } else {
-        console.warn('[FNOS] TRIM token 为空，跳过授权目录查询');
-      }
-
-      // ===== 4. 扫描 /vol1 下可写的一级目录 =====
-      try {
-        const vol1Entries = fs.readdirSync('/vol1', { withFileTypes: true });
-        for (const entry of vol1Entries) {
-          if (entry.isDirectory()) {
-            const fullPath = path.join('/vol1', entry.name);
-            if (seen.has(fullPath)) continue;
-            let writable = false;
-            try {
-              fs.accessSync(fullPath, fs.constants.W_OK);
-              writable = true;
-            } catch (_) {}
-            if (writable) {
-              folders.push({
-                name: `/vol1/${entry.name}`,
-                path: fullPath,
-                writable: true,
-                source: 'scan',
-              });
-              seen.add(fullPath);
-            }
-          }
-        }
-      } catch (e) {
-        console.log(`[FNOS] /vol1 扫描失败: ${e.message}`);
-      }
-
-      console.log(`[FNOS] 共享目录列表: ${folders.length} 个`);
-      res.json({
-        code: 0,
-        data: {
-          folders,
-          currentFolder: selectedDownloadFolder,
-          currentFolderName: selectedDownloadFolderNames[selectedDownloadFolder] || '',
-          downloadDir: DOWNLOAD_DIR,
-          debug: {
-            tokenAvailable: !!token,
-            tokenPath: TRIM_TOKEN_PATHS[0],
-            containerDownloadDir: DOWNLOAD_DIR,
-          },
-        },
-      });
-    } catch (e) {
-      console.error('[FNOS] 获取共享目录失败:', e.message);
-      res.status(500).json({ code: 1, msg: '获取共享目录失败: ' + e.message });
-    }
-  });
-
-  // 设置用户选择的下载目录
-  app.post('/fnos/set-download-folder', (req, res) => {
-    if (!FNOS_ENV) {
-      return res.json({ code: 1, msg: '仅飞牛环境可用' });
-    }
-    try {
-      const { path: folderPath, name: folderName } = req.body || {};
-      if (!folderPath) {
-        return res.status(400).json({ code: 1, msg: '缺少 path 参数' });
-      }
-      // 安全检查：路径必须在允许的范围内
-      const allowedPrefixes = ['/var/apps/KGconcept/shares/', '/vol1/'];
-      const isAllowed = allowedPrefixes.some(prefix => folderPath.startsWith(prefix));
-      if (!isAllowed) {
-        return res.status(400).json({ code: 1, msg: '路径不在允许的范围内' });
-      }
-      // 检查路径是否存在且可写
-      try {
-        fs.accessSync(folderPath, fs.constants.W_OK);
-      } catch (e) {
-        return res.status(400).json({ code: 1, msg: '路径不存在或不可写: ' + e.message });
-      }
-      selectedDownloadFolder = folderPath;
-      if (folderName) {
-        selectedDownloadFolderNames[folderPath] = folderName;
-      }
-      console.log(`[FNOS] 下载目录已设置为: ${folderPath}`);
-      res.json({
-        code: 0,
-        msg: '设置成功',
-        data: { path: folderPath, name: selectedDownloadFolderNames[folderPath] || '' },
-      });
-    } catch (e) {
-      res.status(500).json({ code: 1, msg: '设置失败: ' + e.message });
-    }
   });
 
   // 仅在飞牛环境下启用服务端下载到共享目录
@@ -425,19 +159,19 @@ async function consturctServer(moduleDefs) {
     const logDownload = (msg) => {
       const ts = new Date().toISOString();
       const line = `[${ts}] ${msg}\n`;
-      fs.promises.appendFile(path.join(selectedDownloadFolder, '.download.log'), line).catch(() => {});
+      fs.promises.appendFile(path.join(DOWNLOAD_DIR, '.download.log'), line).catch(() => {});
     };
 
-    // 确保下载目录可写（首次写入前调用）
+    // 确保 DOWNLOAD_DIR 可写（首次写入前调用）
     const ensureDownloadDirWritable = async () => {
       try {
-        await fs.promises.access(selectedDownloadFolder, fs.constants.W_OK);
+        await fs.promises.access(DOWNLOAD_DIR, fs.constants.W_OK);
       } catch (e) {
         try {
-          await fs.promises.chmod(selectedDownloadFolder, 0o777);
-          await fs.promises.access(selectedDownloadFolder, fs.constants.W_OK);
+          await fs.promises.chmod(DOWNLOAD_DIR, 0o777);
+          await fs.promises.access(DOWNLOAD_DIR, fs.constants.W_OK);
         } catch (_) {
-          logDownload(`ERROR: 下载目录 ${selectedDownloadFolder} 不可写，挂载可能未生效。`);
+          logDownload(`ERROR: DOWNLOAD_DIR ${DOWNLOAD_DIR} 不可写，挂载可能未生效。文件将写入容器内部层（重启即丢失）。`);
         }
       }
     };
@@ -448,12 +182,12 @@ async function consturctServer(moduleDefs) {
       await ensureDownloadDirWritable();
 
       const safeFileName = sanitize(fileName);
-      let dir = selectedDownloadFolder;
+      let dir = DOWNLOAD_DIR;
       let relativePath = safeFileName;
       if (categorize) {
         const safeArtist = sanitize(artist || '未知歌手');
         const safeAlbum = sanitize(album || '未知专辑');
-        dir = path.join(selectedDownloadFolder, safeArtist, safeAlbum);
+        dir = path.join(DOWNLOAD_DIR, safeArtist, safeAlbum);
         relativePath = path.join(safeArtist, safeAlbum, safeFileName);
       }
       await fs.promises.mkdir(dir, { recursive: true });
@@ -854,13 +588,13 @@ async function consturctServer(moduleDefs) {
             if (entry.isDirectory()) {
               await scanDir(fullPath, depth + 1);
             } else if (/\.(mp3|flac)$/i.test(entry.name)) {
-              const rel = path.relative(selectedDownloadFolder, fullPath);
+              const rel = path.relative(DOWNLOAD_DIR, fullPath);
               const stat = await fs.promises.stat(fullPath);
               results.push({ path: rel, name: entry.name, size: stat.size });
             }
           }
         };
-        await scanDir(selectedDownloadFolder);
+        await scanDir(DOWNLOAD_DIR);
         res.json({ code: 0, data: { files: results } });
       } catch (e) {
         res.status(500).json({ code: 1, msg: '读取列表失败: ' + e.message });

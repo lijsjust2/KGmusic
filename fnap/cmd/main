@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# KGconcept 应用运行控制脚本
+# KGmusic 应用运行控制脚本
 # Docker 应用：容器由飞牛 appcenter 通过 config/resource 的 docker-project 声明自动管理，
 # cmd/main 的 start/stop 不做任何事，status 通过 docker inspect 查询容器运行状态。
 # 参考官方 Docker 模板: fnpack create <app> --template docker

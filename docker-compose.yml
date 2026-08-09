@@ -1,6 +1,6 @@
 services:
-  kgconcept:
-    container_name: kgconcept # 容器名
+  kgmusic:
+    container_name: kgmusic # 容器名
     restart: unless-stopped # 自动重启
     build:
       context: .

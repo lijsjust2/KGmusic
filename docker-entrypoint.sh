@@ -1,6 +1,6 @@
 #!/bin/sh
 
-echo "Starting KGconcept..."
+echo "Starting KGmusic..."
 echo "FNOS_ENV=$FNOS_ENV"
 echo "DOWNLOAD_DIR=$DOWNLOAD_DIR"
 

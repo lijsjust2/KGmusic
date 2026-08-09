@@ -1,18 +1,13 @@
 services:
-  kgconcept:
-    image: lijsfun/kgcc:latest
-    container_name: kgconcept
+  kgmusic:
+    image: lijsfun/kgmusic:latest
+    container_name: kgmusic
     ports:
       - "8880:8880"
     volumes:
-      # data-share: KGconcept/downloads (主下载目录，同时挂载到 /app/downloads 兼容旧逻辑)
-      - "/var/apps/KGconcept/shares/KGconcept/downloads:/app/downloads"
-      # data-share: KGconcept (父目录，用于扫描兄弟文件夹)
-      - "/var/apps/KGconcept/shares/KGconcept:/app/shares/KGconcept"
-      # TRIM API token 文件（飞牛自动注入，只读）
-      - "/var/apps/KGconcept/.trim_token:/var/apps/KGconcept/.trim_token:ro"
-      # /vol1 挂载，用于访问 TRIM 授权的外部目录（如存储空间）
-      - "/vol1:/vol1"
+      # data-share 声明的共享目录: KGmusic/downloads
+      # 飞牛自动创建路径: /var/apps/{appname}/shares/{share_name}
+      - "/var/apps/KGmusic/shares/KGmusic/downloads:/app/downloads"
     environment:
       - FNOS_ENV=true
       - DOWNLOAD_DIR=/app/downloads

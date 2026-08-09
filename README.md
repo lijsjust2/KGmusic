@@ -1,7 +1,7 @@
 <br />
 <p align="center">
     <img src="./mobile/public/logo.png" alt="Logo" width="156" height="156">
-  <h2 align="center" style="font-weight: 600">KGconcept</h2>
+  <h2 align="center" style="font-weight: 600">KGmusic</h2>
 
   <p align="center">
     适配移动端的开源简洁酷狗第三方播放器
@@ -48,8 +48,8 @@
 ### 1. 本地开发环境
 #### 1.1 克隆代码仓库
 ```bash
-git clone https://github.com/lijsjust2/KGconcept.git
-cd KGconcept
+git clone https://github.com/lijsjust2/KGmusic.git
+cd KGmusic
 ```
 
 #### 1.2 安装项目依赖
@@ -80,30 +80,30 @@ npm run install-all
 #### 方式一：从 Docker Hub 拉取镜像（推荐）
 ```bash
 # 自动适配架构（推荐）
-docker pull lijsfun/kgcc:latest
+docker pull lijsfun/kgmusic:latest
 
 # 运行容器
 docker run -d \
-  --name kgconcept \
+  --name kgmusic \
   --restart unless-stopped \
   -p 8880:8880 \
   -p 6521:6521 \
-  lijsfun/kgcc:latest
+  lijsfun/kgmusic:latest
 ```
 
 如需指定特定架构：
 ```bash
 # AMD64 架构 (x86_64)
-docker pull lijsfun/kgcc:amd64-latest
+docker pull lijsfun/kgmusic:amd64-latest
 
 # ARM64 架构 (aarch64)
-docker pull lijsfun/kgcc:arm64-latest
+docker pull lijsfun/kgmusic:arm64-latest
 ```
 
 #### 方式二：Docker Compose 快速启动
 ```bash
-git clone https://github.com/lijsjust2/KGconcept.git
-cd KGconcept
+git clone https://github.com/lijsjust2/KGmusic.git
+cd KGmusic
 docker compose up -d --build
 ```
 
@@ -111,31 +111,31 @@ docker compose up -d --build
 ##### 3.1 加载镜像（适用于从 GitHub Releases 下载的 tar 包）
 加载 AMD64 架构镜像
 ```bash
-docker load -i kgcc-amd64-版本号.tar
+docker load -i kgmusic-amd64-版本号.tar
 ```
 加载 ARM64 架构镜像
 ```bash
-docker load -i kgcc-arm64-版本号.tar
+docker load -i kgmusic-arm64-版本号.tar
 ```
 
 ##### 3.2 运行容器
 运行 AMD64 架构
 ```bash
 docker run -d \
-  --name kgconcept \
+  --name kgmusic \
   --restart unless-stopped \
   -p 8880:8880 \
   -p 6521:6521 \
-  lijsfun/kgcc:amd64-版本号
+  lijsfun/kgmusic:amd64-版本号
 ```
 运行 ARM64 架构
 ```bash
 docker run -d \
-  --name kgconcept \
+  --name kgmusic \
   --restart unless-stopped \
   -p 8880:8880 \
   -p 6521:6521 \
-  lijsfun/kgcc:arm64-版本号
+  lijsfun/kgmusic:arm64-版本号
 ```
 
 ---
@@ -143,7 +143,7 @@ docker run -d \
 ## 📁 项目结构
 
 ```
-KGconcept/
+KGmusic/
 ├── KuGouMusicApi/  # API 服务目录
 ├── mobile/         # 移动端前端目录
 │   ├── assets/     # 移动端静态资源
@@ -189,4 +189,4 @@ KGconcept/
 
 本项目仅供个人学习研究使用，禁止用于商业及非法用途。
 
-基于 [GNU General Public License v2.0 (GPL-2.0)](https://github.com/lijsjust2/KGconcept/blob/main/LICENSE) 许可进行开源。
+基于 [GNU General Public License v2.0 (GPL-2.0)](https://github.com/lijsjust2/KGmusic/blob/main/LICENSE) 许可进行开源。

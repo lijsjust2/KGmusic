@@ -1,17 +1,17 @@
-appname               = KGconcept
-version               = 1.5.8
-display_name          = KGconcept
-desc                  = KGconcept 酷狗音乐移动端，支持在线试听与歌曲下载。在飞牛环境下下载的歌曲会自动保存到应用的共享目录。
+appname               = KGmusic
+version               = 0.0.1
+display_name          = KGmusic
+desc                  = KGmusic 酷狗音乐移动端，支持在线试听与歌曲下载。在飞牛环境下下载的歌曲会自动保存到应用的共享目录。
 platform              = all
 source                = thirdparty
 maintainer            = lijsfun
-maintainer_url        = https://github.com/lijsjust2/KGconcept
+maintainer_url        = https://github.com/lijsjust2/KGmusic
 distributor           = lijsfun
 
 os_min_version        = 1.2.0
 
 desktop_uidir         = ui
-desktop_applaunchname = KGconcept.Application
+desktop_applaunchname = KGmusic.Application
 
 ctl_stop              = true
 micro_app             = true

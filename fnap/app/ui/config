@@ -1,7 +1,7 @@
 {
   ".url": {
-    "KGconcept.Application": {
-      "title": "KGconcept",
+    "KGmusic.Application": {
+      "title": "KGmusic",
       "icon": "images/icon_{0}.png",
       "type": "iframe",
       "protocol": "http",

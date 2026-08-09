@@ -17,7 +17,7 @@
                 <i v-else class="fas fa-music"></i>
             </div>
             <div class="song-info" @click="toggleLyrics(currentSong.hash, currentTime)">
-                <div class="song-title" @click.stop="searchSong(currentSong.name)">{{ currentSong?.name || "KGconcept" }}</div>
+                <div class="song-title" @click.stop="searchSong(currentSong.name)">{{ currentSong?.name || "KGmusic" }}</div>
                 <div class="artist" @click.stop="searchSong(currentSong.author)">{{ currentSong?.author || "lijsfun" }}</div>
             </div>
             <div class="controls">

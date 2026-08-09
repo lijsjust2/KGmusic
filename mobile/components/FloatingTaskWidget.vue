@@ -202,7 +202,7 @@ const showFloating = computed(() => {
     if (!status.value) return false;
     if (hasTasks.value) return true;
     // 检查用户是否手动关闭过（关闭后 30 分钟内不再显示已完成状态）
-    const dismissedAt = parseInt(localStorage.getItem('KGconcept_widget_dismissed') || '0', 10);
+    const dismissedAt = parseInt(localStorage.getItem('KGmusic_widget_dismissed') || '0', 10);
     if (dismissedAt && Date.now() - dismissedAt < 30 * 60 * 1000) return false;
     // 最近有完成记录且在 30 分钟内
     const last = recent.value[0];
@@ -283,7 +283,7 @@ const closePanel = () => {
 
 // 关闭悬浮窗（仅在全部完成后可用，通过 localStorage 记住关闭状态）
 const dismissWidget = () => {
-    localStorage.setItem('KGconcept_widget_dismissed', String(Date.now()));
+    localStorage.setItem('KGmusic_widget_dismissed', String(Date.now()));
     // 立即隐藏
     status.value = null;
 };

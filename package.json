@@ -1,7 +1,7 @@
 {
-  "name": "kgconcept",
-  "version": "1.5.8",
-  "homepage": "https://github.com/lijsjust2/KGconcept",
+  "name": "kgmusic",
+  "version": "0.0.1",
+  "homepage": "https://github.com/lijsjust2/KGmusic",
   "scripts": {
     "install-all": "cd KuGouMusicApi && npm install && cd ../mobile && npm install",
     "api": "node KuGouMusicApi/app.js --platform=lite --port=6521",
@@ -17,10 +17,8 @@
   },
   "type": "module",
   "author": {
-    "name": "MoeJue",
-    "email": "MoeJue@qq.com"
+    "name": "lijsfun"
   },
-  "blog": "MoeJue.cn",
   "license": "MIT",
-  "description": "MoeKoe Music Mobile"
+  "description": "KGmusic 酷狗音乐移动端"
 }

@@ -271,7 +271,7 @@ async function embedFlacMetadata(arrayBuffer, songInfo, coverUrl, lyrics) {
     flac.setTag(`ALBUM=${albumName}`)
     flac.setTag(`DATE=${albumYear}`)
     flac.setTag('GENRE=Music')
-    flac.setTag('COMMENT=Downloaded by KGconcept')
+    flac.setTag('COMMENT=Downloaded by KGmusic')
     
     // 专辑艺术家
     const albumArtist = songInfo.album_artist || songInfo.author || cleanAuthor

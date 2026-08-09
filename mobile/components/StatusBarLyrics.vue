@@ -93,7 +93,7 @@ const renderFrameWithOffset = (text, offsetX = 0, isMarquee = false) => {
         if (scrollState.hasPlayedLyrics) {
             textToDraw = '♩ ♩ ♩';
         } else {
-            textToDraw = '♪ KGconcept - 萌音';
+            textToDraw = '♪ KGmusic - 萌音';
         }
         isPlaceholder = true;
     } else {
