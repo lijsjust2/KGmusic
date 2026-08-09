@@ -171,6 +171,11 @@ const props = defineProps({
     downloadDelayMax: {
         type: Number,
         default: 3
+    },
+    // 批次级歌手名（用于统一文件夹结构）
+    batchArtist: {
+        type: String,
+        default: ''
     }
 });
 
@@ -341,7 +346,9 @@ const handleQualitySelect = async (quality) => {
                 quality,
                 props.downloadDelayMin,
                 props.downloadDelayMax,
-                pushplusToken
+                pushplusToken,
+                '',
+                props.batchArtist
             );
             if (result.success) {
                 const added = result.added || 0;

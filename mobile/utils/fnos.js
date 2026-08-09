@@ -119,11 +119,11 @@ export async function downloadToFnos(url, fileName, artist, album, categorize = 
 /**
  * 批量歌曲加入后台下载队列（飞牛环境）
  */
-export async function addToDownloadQueue(songs, quality, delayMin = 1, delayMax = 3, pushplusToken = '', folder = '') {
+export async function addToDownloadQueue(songs, quality, delayMin = 1, delayMax = 3, pushplusToken = '', folder = '', batchArtist = '') {
   try {
     const res = await post(
       '/fnos/queue/add',
-      { songs, quality, delayMin, delayMax, pushplusToken, folder },
+      { songs, quality, delayMin, delayMax, pushplusToken, folder, batchArtist },
       { timeout: 30000 }
     )
     if (res?.code === 0) {

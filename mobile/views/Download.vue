@@ -299,6 +299,7 @@
                     trigger-icon="fas fa-download"
                     :download-delay-min="downloadDelayMin"
                     :download-delay-max="downloadDelayMax"
+                    :batch-artist="artistName"
                     @download-start="handleDownloadStart"
                     @download-complete="handleDownloadComplete"
                     @song-download-success="handleSongDownloadSuccess"

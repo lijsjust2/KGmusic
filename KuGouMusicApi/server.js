@@ -287,7 +287,8 @@ async function consturctServer(moduleDefs) {
           const downloadUrl = urlResp.url[0];
           const ext = q === 'flac' ? 'flac' : 'mp3';
           const fileName = `${task.song.name} - ${task.song.author}.${ext}`;
-          const result = await downloadUrlToFile(downloadUrl, fileName, task.song.author, task.song.album, true);
+          const folderArtist = batch.batchArtist || task.song.author;
+          const result = await downloadUrlToFile(downloadUrl, fileName, folderArtist, task.song.album, true);
           return { ...result, quality: q };
         } catch (e) {
           lastErr = e;
@@ -444,7 +445,7 @@ async function consturctServer(moduleDefs) {
     // 添加任务到队列
     app.post('/fnos/queue/add', async (req, res) => {
       try {
-        const { songs, quality, delayMin, delayMax, pushplusToken } = req.body || {};
+        const { songs, quality, delayMin, delayMax, pushplusToken, batchArtist } = req.body || {};
         if (!Array.isArray(songs) || songs.length === 0) {
           return res.status(400).json({ code: 1, msg: '缺少 songs 参数' });
         }
@@ -461,6 +462,7 @@ async function consturctServer(moduleDefs) {
           delayMin: Number(delayMin) || 1,
           delayMax: Number(delayMax) || 3,
           pushplusToken: pushplusToken || '',
+          batchArtist: batchArtist || '',
           // 批次统计，不依赖 taskHistory
           stats: {
             total: 0,
