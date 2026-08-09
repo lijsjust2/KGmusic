@@ -301,15 +301,23 @@ async function consturctServer(moduleDefs) {
       const batch = batches.get(batchId);
       if (!batch || !batch.pushplusToken) return;
 
+      // 统计数据用 batch.stats（不依赖会被裁剪的 taskHistory）
+      const stats = batch.stats;
+      const successCount = stats.success;
+      const failedCount = stats.failed;
+      const totalCount = stats.total;
+      const quality = batch.quality;
+
+      // 歌曲明细仍从 taskHistory 取（taskHistory 至少保存 MAX_HISTORY=200，
+      // 对于推送来说显示最近的就够了；如果超过200首，只展示最后 200 首的明细，
+      // 顶部总数是准确的）
       const batchTasks = taskHistory.filter(t => t.batchId === batchId);
       const successList = batchTasks.filter(t => t.status === 'success');
       const failedList = batchTasks.filter(t => t.status === 'failed');
-      const totalCount = batchTasks.length;
-      const quality = batch.quality;
 
       // 格式化 Markdown 内容
       let content = `## 总下载歌曲：${totalCount}首，音质${quality}\n\n`;
-      content += `**成功下载${successList.length}首，失败${failedList.length}首**\n\n`;
+      content += `**成功下载${successCount}首，失败${failedCount}首**\n\n`;
 
       if (successList.length > 0) {
         const groups = {};
@@ -370,20 +378,29 @@ async function consturctServer(moduleDefs) {
             taskHistory.push(task);
             const idx = taskQueue.indexOf(task);
             if (idx >= 0) taskQueue.splice(idx, 1);
+            globalCounter.totalFailed++;
             continue;
           }
 
           task.status = 'downloading';
           task.startedAt = Date.now();
+          batch.stats.pending--;
+          batch.stats.downloading++;
 
           try {
             const result = await downloadTaskWithFallback(task, batch);
             task.status = 'success';
             task.path = result.relativePath;
             task.quality = result.quality;
+            batch.stats.downloading--;
+            batch.stats.success++;
+            globalCounter.totalSuccess++;
           } catch (err) {
             task.status = 'failed';
             task.error = err.message || '下载失败';
+            batch.stats.downloading--;
+            batch.stats.failed++;
+            globalCounter.totalFailed++;
           }
 
           task.finishedAt = Date.now();
@@ -391,7 +408,7 @@ async function consturctServer(moduleDefs) {
           const idx = taskQueue.indexOf(task);
           if (idx >= 0) taskQueue.splice(idx, 1);
 
-          // 裁剪历史
+          // 裁剪历史（仅用于 recent 列表展示，不影响统计）
           while (taskHistory.length > MAX_HISTORY) taskHistory.shift();
 
           // 检查该批次是否已全部完成（无 pending 且无 downloading）
@@ -417,6 +434,13 @@ async function consturctServer(moduleDefs) {
       }
     };
 
+    // ========== 全局计数器（不依赖 taskHistory）==========
+    const globalCounter = {
+      totalSuccess: 0,
+      totalFailed: 0,
+      totalCancelled: 0,
+    };
+
     // 添加任务到队列
     app.post('/fnos/queue/add', async (req, res) => {
       try {
@@ -437,10 +461,22 @@ async function consturctServer(moduleDefs) {
           delayMin: Number(delayMin) || 1,
           delayMax: Number(delayMax) || 3,
           pushplusToken: pushplusToken || '',
+          // 批次统计，不依赖 taskHistory
+          stats: {
+            total: 0,
+            pending: 0,
+            downloading: 0,
+            success: 0,
+            failed: 0,
+            cancelled: 0,
+          },
+          // 为了批次名显示收集专辑信息（不依赖 taskHistory）
+          albums: new Set(),
+          firstAlbumName: '',
         });
 
         const now = Date.now();
-        const tasks = songs.map((song, i) => ({
+        const allTasks = songs.map((song, i) => ({
           id: `${batchId}_${i}`,
           batchId,
           status: 'pending',
@@ -456,22 +492,41 @@ async function consturctServer(moduleDefs) {
           addedAt: now + i,
           startedAt: 0,
           finishedAt: 0,
-        })).filter(t => t.song.hash); // 必须有 hash
+        }));
+
+        const totalSongs = allTasks.length;
+        const tasks = allTasks.filter(t => t.song.hash); // 必须有 hash
+        const skipped = totalSongs - tasks.length;
 
         if (tasks.length === 0) {
           batches.delete(batchId);
-          return res.status(400).json({ code: 1, msg: '歌曲缺少 hash，无法加入队列' });
+          return res.status(400).json({ code: 1, msg: '所有歌曲均缺少 hash，无法加入队列' });
         }
 
         taskQueue.push(...tasks);
+
+        // 初始化批次统计（不依赖 taskHistory）
+        const batch = batches.get(batchId);
+        if (batch) {
+          batch.stats.total = tasks.length;
+          batch.stats.pending = tasks.length;
+          tasks.forEach(t => {
+            const albumName = t.song.album || '未知专辑';
+            batch.albums.add(albumName);
+            if (!batch.firstAlbumName) batch.firstAlbumName = albumName;
+          });
+        }
 
         // 启动 worker（如未运行）
         if (!workerRunning) {
           processQueue().catch(e => console.error('[FNOS Queue] 启动 worker 失败:', e.message));
         }
 
-        console.log(`[FNOS Queue] 批次 ${batchId} 加入 ${tasks.length} 首歌曲，音质 ${qualityVal}`);
-        res.json({ code: 0, msg: '已加入下载队列', data: { batchId, added: tasks.length, total: tasks.length } });
+        console.log(`[FNOS Queue] 批次 ${batchId} 加入 ${tasks.length} 首（跳过 ${skipped} 首无 hash），音质 ${qualityVal}`);
+        const successMsg = skipped > 0
+          ? `已加入 ${tasks.length} 首，跳过 ${skipped} 首（缺少下载信息）`
+          : '已加入下载队列';
+        res.json({ code: 0, msg: successMsg, data: { batchId, added: tasks.length, skipped, total: tasks.length } });
       } catch (e) {
         console.error('[FNOS Queue] 加入队列失败:', e.message);
         res.status(500).json({ code: 1, msg: '加入队列失败: ' + e.message });
@@ -484,39 +539,36 @@ async function consturctServer(moduleDefs) {
       const pending = taskQueue.filter(t => t.status === 'pending');
       const recent = taskHistory.slice(-100).reverse();
 
-      // 按批次汇总
-      const batchMap = new Map();
-      const aggregate = (t) => {
-        if (!batchMap.has(t.batchId)) {
-          batchMap.set(t.batchId, {
-            batchId: t.batchId,
-            total: 0, pending: 0, downloading: 0, success: 0, failed: 0, cancelled: 0,
-            addedAt: t.addedAt,
-            quality: t.quality,
-            firstAlbumName: '',
-            currentSongName: '',
-            albums: new Set(),
-          });
-        }
-        const b = batchMap.get(t.batchId);
-        b.total++;
-        if (b[t.status] !== undefined) b[t.status]++;
-        const albumName = t.song.album || '未知专辑';
-        b.albums.add(albumName);
-        if (!b.firstAlbumName) b.firstAlbumName = albumName;
-        if (t.status === 'downloading') b.currentSongName = t.song.name;
-      };
-      taskQueue.forEach(aggregate);
-      taskHistory.forEach(aggregate);
-      const batchesArr = Array.from(batchMap.values()).sort((a, b) => b.addedAt - a.addedAt);
-      // 将 Set 转为数组和计数，方便 JSON 序列化
-      batchesArr.forEach(b => {
-        b.albumCount = b.albums.size;
-        b.albums = Array.from(b.albums);
+      // 按批次汇总：以 batches Map 里独立保存的 stats 为准（不依赖会被裁剪的 taskHistory）
+      const batchesArr = [];
+      // 先加入在队列中正在进行 / 等待中的批次
+      const activeBatchIds = new Set();
+      taskQueue.forEach(t => activeBatchIds.add(t.batchId));
+      // 再加上已完成但还在 batches Map 里的批次
+      batches.forEach((batch, batchId) => {
+        const activeTasks = taskQueue.filter(t => t.batchId === batchId);
+        const activeTask = activeTasks.find(t => t.status === 'downloading');
+        batchesArr.push({
+          batchId,
+          total: batch.stats.total,
+          pending: batch.stats.pending,
+          downloading: batch.stats.downloading,
+          success: batch.stats.success,
+          failed: batch.stats.failed,
+          cancelled: batch.stats.cancelled,
+          addedAt: batch.addedAt,
+          quality: batch.quality,
+          firstAlbumName: batch.firstAlbumName,
+          currentSongName: activeTask ? activeTask.song.name : '',
+          albumCount: batch.albums.size,
+          albums: Array.from(batch.albums),
+        });
       });
+      batchesArr.sort((a, b) => b.addedAt - a.addedAt);
 
-      const totalSuccess = taskHistory.filter(t => t.status === 'success').length;
-      const totalFailed = taskHistory.filter(t => t.status === 'failed').length;
+      // 全局统计用 globalCounter（不依赖 taskHistory）
+      const totalSuccess = globalCounter.totalSuccess;
+      const totalFailed = globalCounter.totalFailed;
 
       res.json({
         code: 0,
@@ -548,6 +600,12 @@ async function consturctServer(moduleDefs) {
             t.finishedAt = Date.now();
             taskHistory.push(t);
             cancelledCount++;
+            globalCounter.totalCancelled++;
+            const batch = batches.get(t.batchId);
+            if (batch) {
+              batch.stats.pending--;
+              batch.stats.cancelled++;
+            }
             return true;
           }
           return false;
@@ -577,6 +635,17 @@ async function consturctServer(moduleDefs) {
     app.post('/fnos/queue/clear', (req, res) => {
       const before = taskHistory.length;
       taskHistory.length = 0;
+      // 同步清理 batches Map 中已全部完成且没有正在进行任务的批次
+      for (const [batchId, batch] of batches.entries()) {
+        const batchActive = taskQueue.some(t => t.batchId === batchId);
+        if (!batchActive && batch.stats.downloading === 0 && batch.stats.pending === 0) {
+          batches.delete(batchId);
+        }
+      }
+      // 同步清零全局计数器（可选：清空历史通常意味着用户想从头计数）
+      globalCounter.totalSuccess = 0;
+      globalCounter.totalFailed = 0;
+      globalCounter.totalCancelled = 0;
       res.json({ code: 0, msg: `已清空 ${before} 条历史`, data: { cleared: before } });
     });
 

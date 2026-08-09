@@ -344,7 +344,13 @@ const handleQualitySelect = async (quality) => {
                 pushplusToken
             );
             if (result.success) {
-                message.success(`已添加到下载列表，共 ${result.added} 首歌曲`);
+                const added = result.added || 0;
+                const skipped = result.skipped || 0;
+                if (skipped > 0) {
+                    message.success(`已添加 ${added} 首，跳过 ${skipped} 首（缺少下载信息）`);
+                } else {
+                    message.success(`已添加到下载列表，共 ${added} 首歌曲`);
+                }
                 // 通知悬浮任务提醒窗：立即唤醒 + 切回高频刷新
                 try {
                     window.dispatchEvent(new CustomEvent('kgmusic:task-added', { detail: { batchId: result.batchId, added: result.added } }));

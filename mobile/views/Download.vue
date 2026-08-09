@@ -599,8 +599,9 @@ const fetchArtistAlbums = async (id) => {
     const albums = [];
     let page = 1;
     let hasMore = true;
+    const MAX_PAGES = 50; // 安全上限：最多50页（5000个专辑）
     
-    while (hasMore) {
+    while (hasMore && page <= MAX_PAGES) {
         try {
             const response = await get('/artist/albums', {
                 id,
@@ -613,7 +614,9 @@ const fetchArtistAlbums = async (id) => {
                 albums.push(...albumList);
                 
                 const total = response.extra?.page_total || response.data?.total || 0;
-                if (albums.length >= total || albumList.length === 0) {
+                const ALBUM_PAGE_SIZE = 100;
+                // 用「返回数量 < pagesize」判断最后一页，不依赖可能缺失的 total 字段
+                if (albumList.length < ALBUM_PAGE_SIZE || albums.length >= total || albumList.length === 0) {
                     hasMore = false;
                 } else {
                     page++;
@@ -636,8 +639,9 @@ const fetchAlbumSongs = async (albumId, albumName, publishDate) => {
     const allSongs = [];
     let page = 1;
     let hasMore = true;
+    const MAX_PAGES = 50; // 安全上限：最多50页（2500首歌曲）
     
-    while (hasMore) {
+    while (hasMore && page <= MAX_PAGES) {
         try {
             const response = await get('/album/songs', {
                 id: albumId,
@@ -687,8 +691,10 @@ const fetchAlbumSongs = async (albumId, albumName, publishDate) => {
                     
                     allSongs.push(...formattedSongs);
                     
-                    const total = response.data.total || 0;
-                    if (allSongs.length >= total || songList.length === 0) {
+                    // 分页终止：用「返回数量 < pagesize」判断最后一页，不依赖可能缺失的 total 字段
+                    const total = response.data?.total || 0;
+                    const PAGE_SIZE = 50;
+                    if (songList.length < PAGE_SIZE || allSongs.length >= total || songList.length === 0) {
                         hasMore = false;
                     } else {
                         page++;

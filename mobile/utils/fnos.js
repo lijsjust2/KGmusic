@@ -127,8 +127,8 @@ export async function addToDownloadQueue(songs, quality, delayMin = 1, delayMax 
       { timeout: 30000 }
     )
     if (res?.code === 0) {
-      log('已加入下载队列:', res.data?.batchId, '共', res.data?.added, '首')
-      return { success: true, batchId: res.data?.batchId, added: res.data?.added }
+      log('已加入下载队列:', res.data?.batchId, '加入', res.data?.added, '首，跳过', res.data?.skipped, '首')
+      return { success: true, batchId: res.data?.batchId, added: res.data?.added, skipped: res.data?.skipped || 0 }
     }
     return { success: false, msg: res?.msg || '加入队列失败' }
   } catch (e) {
