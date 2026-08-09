@@ -9,22 +9,27 @@
         <div class="config-section">
             <div class="input-group">
                 <label>歌手ID</label>
-                <div class="input-with-button">
+                <div class="input-with-button artist-id-wrapper">
                     <input
                         v-model="artistId"
                         type="text"
                         placeholder="请输入歌手ID（例如：3520）"
                         class="input-field"
                         @keyup.enter="queryArtist"
+                        @blur="handleBlurArtistId"
                     />
-                    <button
-                        @click="queryArtist"
-                        :disabled="querying || !artistId"
-                        class="btn btn-query"
-                    >
-                        <i class="fas fa-search"></i>
-                        {{ querying ? '查询中...' : '查询歌手' }}
-                    </button>
+                    <!-- 歌手名查询结果（紧跟在输入框右侧） -->
+                    <div v-if="artistLookupStatus !== 'idle' || artistName" class="artist-lookup-result inline-result">
+                        <span v-if="artistLookupStatus === 'loading'" class="lookup-loading">
+                            <i class="fas fa-spinner fa-spin"></i> 查询中...
+                        </span>
+                        <span v-else-if="artistLookupStatus === 'success' && artistName" class="lookup-success">
+                            <i class="fas fa-user-check"></i> {{ artistName }}
+                        </span>
+                        <span v-else-if="artistLookupStatus === 'error'" class="lookup-error">
+                            <i class="fas fa-user-times"></i> {{ artistLookupMsg }}
+                        </span>
+                    </div>
                 </div>
             </div>
 
@@ -32,19 +37,9 @@
             <div class="pre-query-filters">
                 <div class="filter-group-head">
                     <div class="group-title">
-                        <i class="fas fa-calendar-alt group-icon"></i>
                         <span>发行日期范围</span>
                         <span class="group-tag" v-if="dateFrom || dateTo">已设置</span>
                         <span class="group-tag group-tag-muted" v-else>可选</span>
-                    </div>
-                    <div class="quick-range-chips">
-                        <button class="chip" @click="setQuickRange(1)">近1年</button>
-                        <button class="chip" @click="setQuickRange(3)">近3年</button>
-                        <button class="chip" @click="setQuickRange(5)">近5年</button>
-                        <button class="chip" @click="setQuickRange(10)">近10年</button>
-                        <button class="chip chip-danger" @click="clearDateRange" v-if="dateFrom || dateTo">
-                            <i class="fas fa-times-circle"></i> 清空
-                        </button>
                     </div>
                 </div>
 
@@ -82,30 +77,33 @@
 
                 <div class="filter-row checkbox-filter-row">
                     <div class="group-title inline-title">
-                        <i class="fas fa-filter group-icon"></i>
                         <span>专辑排除规则</span>
                     </div>
-                    <label class="checkbox-label checkbox-card" :class="{ active: excludeConcert }">
-                        <div class="checkbox-card-inner">
-                            <input type="checkbox" v-model="excludeConcert" />
-                            <i class="fas fa-microphone-alt"></i>
-                            <div class="card-text">
-                                <span class="card-title">排除演唱会</span>
-                                <span class="card-sub">名称含"演唱会"的专辑不显示</span>
-                            </div>
-                        </div>
-                    </label>
-                    <label class="checkbox-label checkbox-card" :class="{ active: excludeLive }">
-                        <div class="checkbox-card-inner">
-                            <input type="checkbox" v-model="excludeLive" />
-                            <i class="fas fa-broadcast-tower"></i>
-                            <div class="card-text">
-                                <span class="card-title">排除 Live 版本</span>
-                                <span class="card-sub">名称含"Live / LIVE"的专辑不显示</span>
-                            </div>
-                        </div>
-                    </label>
+                    <div class="simple-check">
+                        <input type="checkbox" v-model="excludeConcert" />
+                        <span>排除演唱会（名称含"演唱会"的专辑）</span>
+                    </div>
+                    <div class="simple-check">
+                        <input type="checkbox" v-model="excludeLive" />
+                        <span>排除 Live 版本（名称含"Live / LIVE"的专辑）</span>
+                    </div>
+                    <div class="simple-check">
+                        <input type="checkbox" v-model="excludeNoCompany" />
+                        <span>排除无唱片公司（publish_company 为空的专辑）</span>
+                    </div>
                 </div>
+            </div>
+
+            <!-- 查询专辑按钮（在所有筛选条件下方） -->
+            <div class="query-album-btn-wrapper">
+                <button
+                    @click="queryArtist"
+                    :disabled="querying || !artistId"
+                    class="btn btn-query btn-query-album"
+                >
+                    <i class="fas fa-search"></i>
+                    {{ querying ? '查询中...' : '查询专辑' }}
+                </button>
             </div>
 
             <!-- 查询进度 -->
@@ -393,31 +391,17 @@ const clearDownloadPath = async () => {
 const artistId = ref('');
 const excludeConcert = ref(localStorage.getItem('download_exclude_concert') !== 'false');
 const excludeLive = ref(localStorage.getItem('download_exclude_live') !== 'false');
+const excludeNoCompany = ref(localStorage.getItem('download_exclude_no_company') !== 'false');
 const dateFrom = ref(localStorage.getItem('download_date_from') || '');
 const dateTo = ref(localStorage.getItem('download_date_to') || '');
 const querying = ref(false);
 
-// ===== 快捷日期范围 =====
-const formatDateStr = (d) => {
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}-${m}-${day}`;
-};
+// 歌手ID失焦查询
+const artistName = ref('');
+const artistLookupStatus = ref('idle'); // idle | loading | success | error
+const artistLookupMsg = ref('');
 
-// 设置近 N 年的日期范围（从今天往前推 N 年 - 今天）
-const setQuickRange = (years) => {
-    const end = new Date();
-    const start = new Date();
-    start.setFullYear(end.getFullYear() - years);
-    dateTo.value = formatDateStr(end);
-    dateFrom.value = formatDateStr(start);
-};
-
-const clearDateRange = () => {
-    dateFrom.value = '';
-    dateTo.value = '';
-};
+// ===== 快捷日期范围（已移除快捷按钮，保留变量） =====
 
 const albums = ref([]);
 const selectedAlbums = ref(new Set());
@@ -447,6 +431,7 @@ watch(pushplusToken, (newValue) => {
 // 监听筛选条件变化，自动保存到 localStorage
 watch(excludeConcert, (v) => localStorage.setItem('download_exclude_concert', String(v)));
 watch(excludeLive, (v) => localStorage.setItem('download_exclude_live', String(v)));
+watch(excludeNoCompany, (v) => localStorage.setItem('download_exclude_no_company', String(v)));
 watch(dateFrom, (v) => localStorage.setItem('download_date_from', v || ''));
 watch(dateTo, (v) => localStorage.setItem('download_date_to', v || ''));
 
@@ -569,6 +554,14 @@ const filterAlbumsByConditions = (rawAlbums) => {
         if (excludeLive.value && albumName.includes('live')) {
             return false;
         }
+
+        // 排除无唱片公司
+        if (excludeNoCompany.value) {
+            const company = album.publish_company || album.publishCompany || '';
+            if (!String(company).trim()) {
+                return false;
+            }
+        }
         
         // 发行日期范围过滤
         if (dateFrom.value || dateTo.value) {
@@ -592,6 +585,54 @@ const filterAlbumsByConditions = (rawAlbums) => {
         
         return true;
     });
+};
+
+// 歌手ID失焦自动查询歌手名
+const handleBlurArtistId = async () => {
+    const id = String(artistId.value || '').trim();
+    if (!id) {
+        artistName.value = '';
+        artistLookupStatus.value = 'idle';
+        artistLookupMsg.value = '';
+        return;
+    }
+
+    artistLookupStatus.value = 'loading';
+    artistLookupMsg.value = '';
+    artistName.value = '';
+
+    try {
+        const response = await get('/artist/detail', { id });
+        let found = false;
+        let name = '';
+
+        if (response && response.status === 1 && response.data) {
+            const d = response.data;
+            name = d.author_name || d.authorname || d.name || d.artist_name || d.singer_name || '';
+            // 也可能嵌套在 data.info 下
+            if (!name && d.info && typeof d.info === 'object') {
+                name = d.info.author_name || d.info.authorname || d.info.name || d.info.artist_name || '';
+            }
+            if (name && String(name).trim()) {
+                found = true;
+            }
+        }
+
+        if (found) {
+            artistName.value = String(name).trim();
+            artistLookupStatus.value = 'success';
+            artistLookupMsg.value = '';
+        } else {
+            artistLookupStatus.value = 'error';
+            artistLookupMsg.value = '找不到歌手，请检查歌手ID';
+            artistName.value = '';
+        }
+    } catch (err) {
+        console.warn('查询歌手详情失败:', err);
+        artistLookupStatus.value = 'error';
+        artistLookupMsg.value = '找不到歌手，请检查歌手ID';
+        artistName.value = '';
+    }
 };
 
 // 获取歌手所有专辑
@@ -1137,6 +1178,70 @@ const handleDownloadComplete = async (result) => {
     padding: 16px 0;
 }
 
+/* 歌手ID输入框宽度：约原一半，紧凑显示 */
+.artist-id-wrapper {
+    max-width: 200px;
+    min-width: 140px;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+/* 歌手名查询结果提示 */
+.artist-lookup-result {
+    margin-top: 10px;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+}
+
+/* 紧跟在输入框右侧的内联结果 */
+.artist-lookup-result.inline-result {
+    margin-top: 0;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.lookup-loading {
+    color: rgba(255, 255, 255, 0.75);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.lookup-success {
+    color: #38ef7d;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: rgba(56, 239, 125, 0.1);
+    border: 1px solid rgba(56, 239, 125, 0.25);
+    border-radius: 6px;
+}
+.lookup-error {
+    color: #ff8a8a;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 6px;
+}
+
+/* 查询专辑按钮容器（全部筛选条件下方） */
+.query-album-btn-wrapper {
+    margin-top: 8px;
+    padding: 10px 0 4px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+}
+.btn-query-album {
+    padding: 12px 28px;
+    font-size: 15px;
+}
+
 /* 分组标题 */
 .filter-group-head {
     display: flex;
@@ -1237,8 +1342,9 @@ const handleDownloadComplete = async (result) => {
 }
 
 .date-slot {
-    flex: 1;
-    min-width: 180px;
+    flex: 0 1 auto;
+    min-width: 140px;
+    max-width: 200px;
     padding: 0;
     background: transparent;
     border: none;
@@ -1344,84 +1450,16 @@ const handleDownloadComplete = async (result) => {
     gap: 12px;
 }
 
-.checkbox-label {
+/* 简化的checkbox样式 - 简洁行内 */
+.simple-check {
     display: inline-flex;
     align-items: center;
     gap: 8px;
+    padding: 4px 0;
     font-size: 14px;
-    cursor: pointer;
-    user-select: none;
 }
 
-/* 简化的checkbox样式 */
-.checkbox-card {
-    flex: 1 1 auto;
-    min-width: 0;
-    padding: 10px 12px;
-    border-radius: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    background: rgba(255, 255, 255, 0.05);
-    transition: all 0.2s ease;
-}
-
-.checkbox-card:hover {
-    border-color: rgba(255, 255, 255, 0.25);
-    background: rgba(255, 255, 255, 0.08);
-    transform: none;
-}
-
-.checkbox-card.active {
-    border-color: rgba(102, 126, 234, 0.6);
-    background: rgba(102, 126, 234, 0.2);
-    box-shadow: none;
-}
-
-.checkbox-card-inner {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 0;
-}
-
-.checkbox-card-inner i {
-    width: 24px;
-    height: 24px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: rgba(255, 255, 255, 0.08);
-    border-radius: 4px;
-    font-size: 12px;
-    color: rgba(255, 255, 255, 0.7);
-    flex-shrink: 0;
-}
-
-.checkbox-card.active .checkbox-card-inner i {
-    background: linear-gradient(135deg, #667eea, #764ba2);
-    color: #fff;
-}
-
-.card-text {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    flex: 1;
-    min-width: 0;
-}
-
-.card-title {
-    font-weight: 600;
-    font-size: 14px;
-    color: #fff;
-}
-
-.card-sub {
-    font-size: 12px;
-    color: rgba(255, 255, 255, 0.5);
-    line-height: 1.3;
-}
-
-.checkbox-card input[type="checkbox"] {
+.simple-check input[type="checkbox"] {
     width: 16px;
     height: 16px;
     accent-color: #667eea;
@@ -1429,10 +1467,31 @@ const handleDownloadComplete = async (result) => {
     margin: 0;
 }
 
+.simple-check span {
+    color: rgba(255, 255, 255, 0.85);
+}
+
 /* ====== 移动端适配 ====== */
 @media (max-width: 680px) {
     .pre-query-filters {
         padding: 12px 0;
+    }
+    .artist-id-wrapper {
+        max-width: none;
+        min-width: 0;
+        width: 100%;
+        flex-wrap: wrap;
+    }
+    .artist-lookup-result.inline-result {
+        margin-top: 6px;
+        width: 100%;
+    }
+    .query-album-btn-wrapper {
+        justify-content: stretch;
+    }
+    .query-album-btn-wrapper .btn-query-album {
+        width: 100%;
+        justify-content: center;
     }
     .filter-group-head {
         flex-direction: column;
@@ -1454,9 +1513,8 @@ const handleDownloadComplete = async (result) => {
         flex-direction: column;
         align-items: stretch;
     }
-    .checkbox-card {
-        flex: 1 1 auto;
-        min-width: 0;
+    .simple-check {
+        width: 100%;
     }
 }
 
