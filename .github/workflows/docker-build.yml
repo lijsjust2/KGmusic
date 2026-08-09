@@ -60,24 +60,8 @@ jobs:
           if [ -z "$VERSION" ]; then VERSION="latest"; fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      # 推送到 Docker Hub：一次性构建多平台镜像
-      - name: Build and push multi-platform image to Docker Hub
-        if: github.event.inputs.push_to_dockerhub == 'true'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: |
-            lijsfun/kgmusic:${{ steps.version.outputs.version }}
-            ${{ steps.version.outputs.version != 'latest' && 'lijsfun/kgmusic:latest' || '' }}
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
-
-      # 不推送到 Docker Hub：分架构构建并保存为 tar
+      # 分架构构建并保存为 tar（总是执行，Release 始终包含离线镜像）
       - name: Build Docker image (AMD64) for tar export
-        if: github.event.inputs.push_to_dockerhub != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -91,7 +75,6 @@ jobs:
           # 离线镜像不做 namespace 前缀，fpk 内 docker-compose 引用 lijsfun/kgmusic:latest
 
       - name: Build Docker image (ARM64) for tar export
-        if: github.event.inputs.push_to_dockerhub != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -104,14 +87,12 @@ jobs:
           outputs: type=docker,dest=/tmp/kgmusic-arm64.tar
 
       - name: Update cache
-        if: github.event.inputs.push_to_dockerhub != 'true'
         run: |
           rm -rf /tmp/.buildx-cache
           mv /tmp/.buildx-cache-new /tmp/.buildx-cache || true
           mv /tmp/.buildx-cache-new-arm /tmp/.buildx-cache-arm || true
 
       - name: Rename tar files with version
-        if: github.event.inputs.push_to_dockerhub != 'true'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           mv /tmp/kgmusic-amd64.tar "/tmp/kgmusic-amd64-${VERSION}.tar"
@@ -119,7 +100,6 @@ jobs:
           ls -lh /tmp/kgmusic-*.tar
 
       - name: Upload Docker artifacts
-        if: github.event.inputs.push_to_dockerhub != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: docker-images-${{ steps.version.outputs.version }}
@@ -127,6 +107,20 @@ jobs:
             /tmp/kgmusic-amd64-${{ steps.version.outputs.version }}.tar
             /tmp/kgmusic-arm64-${{ steps.version.outputs.version }}.tar
           retention-days: 7
+
+      # 可选：把多平台合并镜像推送到 Docker Hub（复用上面分架构构建的缓存）
+      - name: Build and push multi-platform image to Docker Hub
+        if: github.event.inputs.push_to_dockerhub == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            lijsfun/kgmusic:${{ steps.version.outputs.version }}
+            ${{ steps.version.outputs.version != 'latest' && 'lijsfun/kgmusic:latest' || '' }}
+          cache-from: type=local,src=/tmp/.buildx-cache
 
   # ==================== 构建飞牛 fpk 安装包 ====================
   build-fpk:
@@ -214,7 +208,6 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
       - name: Download Docker artifacts
-        if: github.event.inputs.push_to_dockerhub != 'true'
         uses: actions/download-artifact@v4
         with:
           name: docker-images-${{ steps.version.outputs.version }}
@@ -229,8 +222,7 @@ jobs:
       - name: List all artifacts
         run: find ./artifacts -type f -exec ls -lh {} \;
 
-      - name: Create Release (Docker tar + fpk)
-        if: github.event.inputs.push_to_dockerhub != 'true'
+      - name: Create Release（总是包含 fpk + X86 + ARM 三份产物）
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
@@ -247,6 +239,7 @@ jobs:
             #### Docker 镜像（离线 tar 包）
             - `kgmusic-amd64-${{ steps.version.outputs.version }}.tar` — AMD64 (x86_64)
             - `kgmusic-arm64-${{ steps.version.outputs.version }}.tar` — ARM64 (aarch64)
+            ${{ github.event.inputs.push_to_dockerhub == 'true' && format('- 同时已推送到 Docker Hub: `lijsfun/kgmusic:{0}`（自动适配 AMD64 和 ARM64 架构）', steps.version.outputs.version) || '' }}
 
             ### 飞牛 fnOS 安装方法
 
@@ -279,65 +272,27 @@ jobs:
 
             ### Docker 直接使用（非飞牛环境）
 
-            ```bash
-            docker load -i kgmusic-amd64-${{ steps.version.outputs.version }}.tar
+            ${{ github.event.inputs.push_to_dockerhub == 'true'
+              && format('```bash
+            docker pull lijsfun/kgmusic:{0}
             docker run -d \
               --name kgmusic \
               --restart unless-stopped \
               -p 8880:8880 \
-              lijsfun/kgmusic:amd64-${{ steps.version.outputs.version }}
+              lijsfun/kgmusic:{0}
+            ```', steps.version.outputs.version)
+              || format('```bash
+            docker load -i kgmusic-amd64-{0}.tar
+            docker run -d \
+              --name kgmusic \
+              --restart unless-stopped \
+              -p 8880:8880 \
+              lijsfun/kgmusic:amd64-{0}
             ```
-            浏览器访问 `http://localhost:8880` 即可使用。
+            浏览器访问 `http://localhost:8880` 即可使用。', steps.version.outputs.version) }}
           draft: false
           prerelease: false
           files: |
             ./artifacts/fpk/KGmusic-${{ steps.version.outputs.version }}.fpk
             ./artifacts/docker/kgmusic-amd64-${{ steps.version.outputs.version }}.tar
             ./artifacts/docker/kgmusic-arm64-${{ steps.version.outputs.version }}.tar
-
-      - name: Create Release (Docker Hub + fpk)
-        if: github.event.inputs.push_to_dockerhub == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          name: "KGmusic ${{ steps.version.outputs.version }}"
-          body: |
-            ## KGmusic ${{ steps.version.outputs.version }}
-
-            ### 下载内容
-
-            #### 飞牛 fnOS 安装包
-            - `KGmusic-${{ steps.version.outputs.version }}.fpk` — 飞牛应用安装包
-
-            #### Docker 镜像
-            - 已推送到 Docker Hub: `lijsfun/kgmusic:${{ steps.version.outputs.version }}`
-            - 自动适配 AMD64 和 ARM64 架构
-
-            ### 飞牛 fnOS 安装方法
-
-            1. **安装 fpk 应用包**
-               - 将 `KGmusic-${{ steps.version.outputs.version }}.fpk` 上传到飞牛 fnOS 设备
-               - 在飞牛应用中心选择「本地安装」，选择 fpk 文件
-               - 安装时自动从 Docker Hub 拉取镜像，无需手动加载
-
-            2. **下载目录说明**
-               - 飞牛环境下，下载的歌曲会自动保存到共享目录 `KGmusic/downloads`
-               - 在飞牛文件管理器的共享文件夹中可找到，按「歌手/专辑」自动分类
-               - 非飞牛环境仍使用浏览器默认下载
-
-            ### Docker 直接使用（非飞牛环境）
-
-            ```bash
-            docker pull lijsfun/kgmusic:${{ steps.version.outputs.version }}
-            docker run -d \
-              --name kgmusic \
-              --restart unless-stopped \
-              -p 8880:8880 \
-              lijsfun/kgmusic:${{ steps.version.outputs.version }}
-            ```
-            浏览器访问 `http://localhost:8880` 即可使用。
-          draft: false
-          prerelease: false
-          files: |
-            ./artifacts/fpk/KGmusic-${{ steps.version.outputs.version }}.fpk
