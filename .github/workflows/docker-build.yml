@@ -53,6 +53,21 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Determine Docker image namespace by branch
+        id: image
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          if [ "$BRANCH" = "main" ]; then
+            IMAGE_BASE="kgmusic"
+            IMAGE_DISPLAY="正式版 (lijsfun/kgmusic)"
+          else
+            IMAGE_BASE="kgmusic-test"
+            IMAGE_DISPLAY="测试版 (lijsfun/kgmusic-test, 分支: $BRANCH)"
+          fi
+          echo "image_base=$IMAGE_BASE" >> $GITHUB_OUTPUT
+          echo "image_display=$IMAGE_DISPLAY" >> $GITHUB_OUTPUT
+          echo "当前分支: $BRANCH → 镜像: $IMAGE_DISPLAY"
+
       - name: Get version
         id: version
         run: |
@@ -68,11 +83,10 @@ jobs:
           file: ./Dockerfile
           push: false
           platforms: linux/amd64
-          tags: kgmusic:amd64-${{ steps.version.outputs.version }}
+          tags: ${{ steps.image.outputs.image_base }}:amd64-${{ steps.version.outputs.version }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
-          outputs: type=docker,dest=/tmp/kgmusic-amd64.tar
-          # 离线镜像不做 namespace 前缀，fpk 内 docker-compose 引用 lijsfun/kgmusic:latest
+          outputs: type=docker,dest=/tmp/${{ steps.image.outputs.image_base }}-amd64.tar
 
       - name: Build Docker image (ARM64) for tar export
         uses: docker/build-push-action@v6
@@ -81,10 +95,10 @@ jobs:
           file: ./Dockerfile
           push: false
           platforms: linux/arm64
-          tags: kgmusic:arm64-${{ steps.version.outputs.version }}
+          tags: ${{ steps.image.outputs.image_base }}:arm64-${{ steps.version.outputs.version }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new-arm,mode=max
-          outputs: type=docker,dest=/tmp/kgmusic-arm64.tar
+          outputs: type=docker,dest=/tmp/${{ steps.image.outputs.image_base }}-arm64.tar
 
       - name: Update cache
         run: |
@@ -95,17 +109,18 @@ jobs:
       - name: Rename tar files with version
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          mv /tmp/kgmusic-amd64.tar "/tmp/kgmusic-amd64-${VERSION}.tar"
-          mv /tmp/kgmusic-arm64.tar "/tmp/kgmusic-arm64-${VERSION}.tar"
-          ls -lh /tmp/kgmusic-*.tar
+          IMG="${{ steps.image.outputs.image_base }}"
+          mv "/tmp/${IMG}-amd64.tar" "/tmp/${IMG}-amd64-${VERSION}.tar"
+          mv "/tmp/${IMG}-arm64.tar" "/tmp/${IMG}-arm64-${VERSION}.tar"
+          ls -lh "/tmp/${IMG}-"*.tar
 
       - name: Upload Docker artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: docker-images-${{ steps.version.outputs.version }}
+          name: docker-images-${{ steps.image.outputs.image_base }}-${{ steps.version.outputs.version }}
           path: |
-            /tmp/kgmusic-amd64-${{ steps.version.outputs.version }}.tar
-            /tmp/kgmusic-arm64-${{ steps.version.outputs.version }}.tar
+            /tmp/${{ steps.image.outputs.image_base }}-amd64-${{ steps.version.outputs.version }}.tar
+            /tmp/${{ steps.image.outputs.image_base }}-arm64-${{ steps.version.outputs.version }}.tar
           retention-days: 7
 
       # 可选：把多平台合并镜像推送到 Docker Hub（复用上面分架构构建的缓存）
@@ -118,8 +133,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            lijsfun/kgmusic:${{ steps.version.outputs.version }}
-            ${{ steps.version.outputs.version != 'latest' && 'lijsfun/kgmusic:latest' || '' }}
+            lijsfun/${{ steps.image.outputs.image_base }}:${{ steps.version.outputs.version }}
+            ${{ steps.version.outputs.version != 'latest' && format('lijsfun/{0}:latest', steps.image.outputs.image_base) || '' }}
           cache-from: type=local,src=/tmp/.buildx-cache
 
   # ==================== 构建飞牛 fpk 安装包 ====================
@@ -129,6 +144,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Determine Docker image namespace by branch
+        id: image
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          if [ "$BRANCH" = "main" ]; then
+            IMAGE_BASE="kgmusic"
+            IS_TEST="no"
+          else
+            IMAGE_BASE="kgmusic-test"
+            IS_TEST="yes"
+          fi
+          echo "image_base=$IMAGE_BASE" >> $GITHUB_OUTPUT
+          echo "is_test=$IS_TEST" >> $GITHUB_OUTPUT
+          echo "当前分支: $BRANCH → 镜像: lijsfun/$IMAGE_BASE"
+
       - name: Get version
         id: version
         run: |
@@ -136,13 +166,29 @@ jobs:
           if [ -z "$VERSION" ]; then VERSION="latest"; fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Update manifest version
+      - name: Patch manifest & docker-compose for branch
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          IMG="${{ steps.image.outputs.image_base }}"
+          IS_TEST="${{ steps.image.outputs.is_test }}"
           if [ "$VERSION" != "latest" ]; then
             sed -i "s/^version=.*/version=$VERSION/" fnap/manifest
             echo "manifest version 已更新为 $VERSION"
           fi
+          # 测试分支：manifest 加测试后缀名，避免在飞牛桌面和正式版图标冲突
+          if [ "$IS_TEST" = "yes" ]; then
+            sed -i "s/^display_name=.*/display_name=KGmusic TEST/" fnap/manifest
+            sed -i "s|^desc=|desc=【TEST 分支】|" fnap/manifest
+          fi
+          # 同步修改 fnap/docker-compose.yaml：image 名、容器名、services 名、volumes 挂载前缀
+          # 即便是正式版，也用统一的 lijsfun/${IMG}:latest 写法，确保 namespace 一致
+          sed -i "s|services:.*|services:|" fnap/app/docker/docker-compose.yaml
+          sed -i "s|^\(  \)kgmusic:.*|\1${IMG}:|" fnap/app/docker/docker-compose.yaml
+          sed -i "s|image:.*lijsfun.*|image: lijsfun/${IMG}:latest|" fnap/app/docker/docker-compose.yaml
+          sed -i "s|container_name:.*|container_name: ${IMG}|" fnap/app/docker/docker-compose.yaml
+          sed -i "s|/var/apps/KGmusic/|/var/apps/KGmusic$( [ "$IS_TEST" = "yes" ] && echo 'TEST' || true )/|" fnap/app/docker/docker-compose.yaml
+          echo "=== docker-compose.yaml 内容 ==="
+          cat fnap/app/docker/docker-compose.yaml
           echo "=== manifest 内容 ==="
           cat fnap/manifest
 
@@ -177,21 +223,28 @@ jobs:
         id: fpk
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          IMG="${{ steps.image.outputs.image_base }}"
           cd fnap
           FPK_FILE=$(ls *.fpk 2>/dev/null | head -1)
           if [ -z "$FPK_FILE" ]; then
             echo "错误：未生成 fpk 文件" >&2
             exit 1
           fi
-          mv "$FPK_FILE" "KGmusic-${VERSION}.fpk"
-          echo "fpk_file=KGmusic-${VERSION}.fpk" >> $GITHUB_OUTPUT
+          # 测试版镜像名 kgmusic-test → 输出 KGmusicTEST 前缀，正式版保持 KGmusic 前缀
+          if [ "${{ steps.image.outputs.is_test }}" = "yes" ]; then
+            NEW_NAME="KGmusicTEST-${VERSION}.fpk"
+          else
+            NEW_NAME="KGmusic-${VERSION}.fpk"
+          fi
+          mv "$FPK_FILE" "$NEW_NAME"
+          echo "fpk_file=${NEW_NAME}" >> $GITHUB_OUTPUT
           ls -la *.fpk
 
       - name: Upload fpk artifact
         uses: actions/upload-artifact@v4
         with:
           name: fpk-${{ steps.version.outputs.version }}
-          path: fnap/KGmusic-${{ steps.version.outputs.version }}.fpk
+          path: fnap/${{ steps.fpk.outputs.fpk_file }}
           retention-days: 7
 
   # ==================== 创建 GitHub Release ====================
@@ -200,6 +253,23 @@ jobs:
     if: github.event.inputs.create_release == 'true'
     runs-on: ubuntu-latest
     steps:
+      - name: Determine Docker image namespace by branch
+        id: image
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          if [ "$BRANCH" = "main" ]; then
+            IMAGE_BASE="kgmusic"
+            FPK_PREFIX="KGmusic"
+            IS_TEST="no"
+          else
+            IMAGE_BASE="kgmusic-test"
+            FPK_PREFIX="KGmusicTEST"
+            IS_TEST="yes"
+          fi
+          echo "image_base=$IMAGE_BASE" >> $GITHUB_OUTPUT
+          echo "fpk_prefix=$FPK_PREFIX" >> $GITHUB_OUTPUT
+          echo "is_test=$IS_TEST" >> $GITHUB_OUTPUT
+
       - name: Get version
         id: version
         run: |
@@ -210,7 +280,7 @@ jobs:
       - name: Download Docker artifacts
         uses: actions/download-artifact@v4
         with:
-          name: docker-images-${{ steps.version.outputs.version }}
+          name: docker-images-${{ steps.image.outputs.image_base }}-${{ steps.version.outputs.version }}
           path: ./artifacts/docker
 
       - name: Download fpk artifact
@@ -225,47 +295,49 @@ jobs:
       - name: Create Release（总是包含 fpk + X86 + ARM 三份产物）
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
+          tag_name: ${{ steps.image.outputs.is_test == 'yes' && format('test-{0}-{1}', steps.version.outputs.version, github.sha) || format('v{0}', steps.version.outputs.version) }}
           token: ${{ secrets.GITHUB_TOKEN }}
-          name: "KGmusic ${{ steps.version.outputs.version }}"
+          name: "${{ steps.image.outputs.is_test == 'yes' && '[TEST]' || '' }} KGmusic ${{ steps.version.outputs.version }} ${{ steps.image.outputs.is_test == 'yes' && format('({0})', github.ref_name) || '' }}"
           body: |
-            ## KGmusic ${{ steps.version.outputs.version }}
+            ## ${{ steps.image.outputs.is_test == 'yes' && '[测试分支构建]' || '' }} KGmusic ${{ steps.version.outputs.version }}
+
+            ${{ steps.image.outputs.is_test == 'yes' && format('> 分支：`{0}` — 本构建使用独立镜像名 `lijsfun/kgmusic-test`，不会覆盖正式版。', github.ref_name) || '' }}
 
             ### 下载内容
 
             #### 飞牛 fnOS 安装包
-            - `KGmusic-${{ steps.version.outputs.version }}.fpk` — 飞牛应用安装包
+            - `${{ steps.image.outputs.fpk_prefix }}-${{ steps.version.outputs.version }}.fpk` — ${{ steps.image.outputs.is_test == 'yes' && '飞牛应用安装包（TEST 版，桌面显示为「KGmusic TEST」）' || '飞牛应用安装包' }}
 
             #### Docker 镜像（离线 tar 包）
-            - `kgmusic-amd64-${{ steps.version.outputs.version }}.tar` — AMD64 (x86_64)
-            - `kgmusic-arm64-${{ steps.version.outputs.version }}.tar` — ARM64 (aarch64)
-            ${{ github.event.inputs.push_to_dockerhub == 'true' && format('- 同时已推送到 Docker Hub: `lijsfun/kgmusic:{0}`（自动适配 AMD64 和 ARM64 架构）', steps.version.outputs.version) || '' }}
+            - `${{ steps.image.outputs.image_base }}-amd64-${{ steps.version.outputs.version }}.tar` — AMD64 (x86_64)
+            - `${{ steps.image.outputs.image_base }}-arm64-${{ steps.version.outputs.version }}.tar` — ARM64 (aarch64)
+            ${{ github.event.inputs.push_to_dockerhub == 'true' && format('- 同时已推送到 Docker Hub: `lijsfun/{0}:{1}`（自动适配 AMD64 和 ARM64 架构）', steps.image.outputs.image_base, steps.version.outputs.version) || '' }}
 
             ### 飞牛 fnOS 安装方法
 
             1. **加载 Docker 镜像**（离线安装需要，联网安装可跳过）
                ```bash
                # 根据设备架构选择对应 tar 包
-               docker load -i kgmusic-amd64-${{ steps.version.outputs.version }}.tar
+               docker load -i ${{ steps.image.outputs.image_base }}-amd64-${{ steps.version.outputs.version }}.tar
                # 或
-               docker load -i kgmusic-arm64-${{ steps.version.outputs.version }}.tar
+               docker load -i ${{ steps.image.outputs.image_base }}-arm64-${{ steps.version.outputs.version }}.tar
                ```
                将镜像重新 tag 为 latest（fpk 安装时引用此名称）：
                ```bash
-               docker tag kgmusic:amd64-${{ steps.version.outputs.version }} lijsfun/kgmusic:latest
+               docker tag ${{ steps.image.outputs.image_base }}:amd64-${{ steps.version.outputs.version }} lijsfun/${{ steps.image.outputs.image_base }}:latest
                # 或
-               docker tag kgmusic:arm64-${{ steps.version.outputs.version }} lijsfun/kgmusic:latest
+               docker tag ${{ steps.image.outputs.image_base }}:arm64-${{ steps.version.outputs.version }} lijsfun/${{ steps.image.outputs.image_base }}:latest
                ```
 
             2. **安装 fpk 应用包**
-               - 将 `KGmusic-${{ steps.version.outputs.version }}.fpk` 上传到飞牛 fnOS 设备
+               - 将 `${{ steps.image.outputs.fpk_prefix }}-${{ steps.version.outputs.version }}.fpk` 上传到飞牛 fnOS 设备
                - 在飞牛应用中心选择「本地安装」，选择 fpk 文件
-               - 安装完成后从桌面打开 KGmusic
+               - 安装完成后从桌面打开 ${{ steps.image.outputs.is_test == 'yes' && 'KGmusic TEST（测试版）' || 'KGmusic' }}
 
             3. **下载目录说明**
                - 飞牛环境下，下载的歌曲会自动保存到共享目录 **`KGmusic/downloads`**
                - 在飞牛文件管理器左侧「共享」中可找到 `KGmusic` 共享文件夹，按「歌手/专辑」自动分类
-               - 实际物理路径：`/var/apps/KGmusic/share/KGmusic/downloads`（容器中挂载为 `/app/downloads`）
+               - 实际物理路径：`/var/apps/${{ steps.image.outputs.is_test == 'yes' && 'KGmusicTEST' || 'KGmusic' }}/share/KGmusic/downloads`（容器中挂载为 `/app/downloads`）
                - 若下载后找不到文件：请在应用「应用设置 → 目录」中确认共享目录已存在，或检查容器内
                  `/app/downloads/.download.log` 和 `/app/downloads/.mount_diagnose.log` 两个日志排查挂载是否生效
                - 非飞牛环境（直接 Docker 运行）仍使用浏览器默认下载
@@ -274,25 +346,25 @@ jobs:
 
             ${{ github.event.inputs.push_to_dockerhub == 'true'
               && format('```bash
-            docker pull lijsfun/kgmusic:{0}
+            docker pull lijsfun/{0}:{1}
             docker run -d \
-              --name kgmusic \
+              --name {0} \
               --restart unless-stopped \
               -p 8880:8880 \
-              lijsfun/kgmusic:{0}
-            ```', steps.version.outputs.version)
+              lijsfun/{0}:{1}
+            ```', steps.image.outputs.image_base, steps.version.outputs.version)
               || format('```bash
-            docker load -i kgmusic-amd64-{0}.tar
+            docker load -i {0}-amd64-{1}.tar
             docker run -d \
-              --name kgmusic \
+              --name {0} \
               --restart unless-stopped \
               -p 8880:8880 \
-              lijsfun/kgmusic:amd64-{0}
+              lijsfun/{0}:amd64-{1}
             ```
-            浏览器访问 `http://localhost:8880` 即可使用。', steps.version.outputs.version) }}
-          draft: false
-          prerelease: false
+            浏览器访问 `http://localhost:8880` 即可使用。', steps.image.outputs.image_base, steps.version.outputs.version) }}
+          draft: ${{ steps.image.outputs.is_test == 'yes' }}
+          prerelease: ${{ steps.image.outputs.is_test == 'yes' }}
           files: |
-            ./artifacts/fpk/KGmusic-${{ steps.version.outputs.version }}.fpk
-            ./artifacts/docker/kgmusic-amd64-${{ steps.version.outputs.version }}.tar
-            ./artifacts/docker/kgmusic-arm64-${{ steps.version.outputs.version }}.tar
+            ./artifacts/fpk/${{ steps.image.outputs.fpk_prefix }}-${{ steps.version.outputs.version }}.fpk
+            ./artifacts/docker/${{ steps.image.outputs.image_base }}-amd64-${{ steps.version.outputs.version }}.tar
+            ./artifacts/docker/${{ steps.image.outputs.image_base }}-arm64-${{ steps.version.outputs.version }}.tar
