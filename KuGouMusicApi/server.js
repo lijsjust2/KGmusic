@@ -180,11 +180,9 @@ async function consturctServer(moduleDefs) {
       }
     };
 
-    // 核心下载函数：将远程 URL 流式写入共享目录（按 歌手/专辑 分类）
-    // 返回 { relativePath, absPath, size }
-    const downloadUrlToFile = async (url, fileName, artist, album, categorize = false) => {
-      await ensureDownloadDirWritable();
-
+    // 计算分类存储下的完整路径（与实际写入逻辑保持一致）
+    // 返回 { dir, filePath, relativePath }
+    const resolveDownloadPaths = (fileName, artist, album, categorize = false) => {
       const safeFileName = sanitize(fileName);
       let dir = DOWNLOAD_DIR;
       let relativePath = safeFileName;
@@ -194,9 +192,37 @@ async function consturctServer(moduleDefs) {
         dir = path.join(DOWNLOAD_DIR, safeArtist, safeAlbum);
         relativePath = path.join(safeArtist, safeAlbum, safeFileName);
       }
-      await fs.promises.mkdir(dir, { recursive: true });
-
       const filePath = path.join(dir, safeFileName);
+      return { dir, filePath, relativePath };
+    };
+
+    // 检查文件是否已存在且大小有效，返回 null 或 { relativePath, absPath, size, skipped:true }
+    const checkExistingFile = async (fileName, artist, album, categorize = false) => {
+      const { filePath, relativePath } = resolveDownloadPaths(fileName, artist, album, categorize);
+      try {
+        const st = await fs.promises.stat(filePath);
+        if (st.isFile() && st.size > 0) {
+          logDownload(`SKIP: 文件已存在，跳过下载 相对路径=${relativePath} 大小=${st.size}B`);
+          return { relativePath, absPath: filePath, size: st.size, skipped: true };
+        }
+      } catch (__) {
+        // 不存在就是正常情况，继续下载
+      }
+      return null;
+    };
+
+    // 核心下载函数：将远程 URL 流式写入共享目录（按 歌手/专辑 分类）
+    // 返回 { relativePath, absPath, size, skipped?:true }
+    const downloadUrlToFile = async (url, fileName, artist, album, categorize = false) => {
+      await ensureDownloadDirWritable();
+
+      const { dir, filePath, relativePath } = resolveDownloadPaths(fileName, artist, album, categorize);
+
+      // 下载前判重：已存在且大小 >0 直接跳过
+      const existing = await checkExistingFile(fileName, artist, album, categorize);
+      if (existing) return existing;
+
+      await fs.promises.mkdir(dir, { recursive: true });
       const response = await axios.get(url, { responseType: 'stream', timeout: 60000, maxRedirects: 5 });
 
       const writer = fs.createWriteStream(filePath);
@@ -248,6 +274,10 @@ async function consturctServer(moduleDefs) {
     const batches = new Map(); // batchId -> { authHeader, cookiesStr, addedAt, quality, delayMin, delayMax }
     let workerRunning = false;
     const MAX_HISTORY = 200;
+    const MAX_RETRY = 3;           // 每个任务最多尝试 3 次（首次 + 2 次重试）
+    const RETRY_BACKOFF = [0, 10, 30]; // 第 N 次失败后等待多少秒再重试（index=0→首次失败→10秒→index=1→30秒）
+    const MAX_CONCURRENT = 3;      // 最多同时下载 3 首
+    let activeDownloadCount = 0;   // 当前正在 downloading 的任务数（统计用，与 batch.stats.downloading 保持同步总和）
     const QUALITY_FALLBACK_ORDER = ['flac', '320', '128'];
 
     // 内部调用 song/url 模块获取下载链接（带用户鉴权）
@@ -362,76 +392,159 @@ async function consturctServer(moduleDefs) {
     };
 
     // 队列 worker：循环处理 pending 任务，关闭页面/飞牛不影响（容器进程持续运行）
+    // 支持：多并发（MAX_CONCURRENT）、失败自动重试（MAX_RETRY+指数退避）
     const processQueue = async () => {
       if (workerRunning) return;
       workerRunning = true;
       try {
+        // 持续运行直到：没有 pending + 没有正在下载 = 所有任务结束
         while (true) {
-          const task = taskQueue.find(t => t.status === 'pending');
-          if (!task) break;
+          const now = Date.now();
+          // 找到「状态是 pending 且已过退避时间」的任务，按 addedAt 顺序取
+          const pickable = taskQueue
+            .filter(t => t.status === 'pending' && t.retryAfter <= now)
+            .sort((a, b) => a.addedAt - b.addedAt);
 
-          const batch = batches.get(task.batchId);
-          if (!batch) {
-            task.status = 'failed';
-            task.error = '批次信息丢失';
-            task.finishedAt = Date.now();
-            taskHistory.push(task);
-            const idx = taskQueue.indexOf(task);
-            if (idx >= 0) taskQueue.splice(idx, 1);
-            globalCounter.totalFailed++;
+          const downloadingCount = taskQueue.filter(t => t.status === 'downloading').length;
+          const slotsAvailable = Math.max(0, MAX_CONCURRENT - downloadingCount);
+
+          // 取 slot 数量个任务并发执行
+          const toRun = pickable.slice(0, slotsAvailable);
+
+          // 如果没有能立刻执行的任务，说明：
+          // 要么全队列为空 → 退出
+          // 要么所有 pending 都在等重试冷却 → sleep 1 秒再查
+          if (toRun.length === 0) {
+            if (taskQueue.length === 0) break;
+            // 还没到重试时间的话 sleep 1s
+            await new Promise(r => setTimeout(r, 1000));
             continue;
           }
 
-          task.status = 'downloading';
-          task.startedAt = Date.now();
-          batch.stats.pending--;
-          batch.stats.downloading++;
-
-          try {
-            const result = await downloadTaskWithFallback(task, batch);
-            task.status = 'success';
-            task.path = result.relativePath;
-            task.quality = result.quality;
-            batch.stats.downloading--;
-            batch.stats.success++;
-            globalCounter.totalSuccess++;
-          } catch (err) {
-            task.status = 'failed';
-            task.error = err.message || '下载失败';
-            batch.stats.downloading--;
-            batch.stats.failed++;
-            globalCounter.totalFailed++;
-          }
-
-          task.finishedAt = Date.now();
-          taskHistory.push(task);
-          const idx = taskQueue.indexOf(task);
-          if (idx >= 0) taskQueue.splice(idx, 1);
-
-          // 裁剪历史（仅用于 recent 列表展示，不影响统计）
-          while (taskHistory.length > MAX_HISTORY) taskHistory.shift();
-
-          // 检查该批次是否已全部完成（无 pending 且无 downloading）
-          const batchRemaining = taskQueue.some(t => t.batchId === task.batchId && (t.status === 'pending' || t.status === 'downloading'));
-          if (!batchRemaining) {
-            // 该批次已完成，发送推送
-            sendBatchCompletionNotification(task.batchId);
-          }
-
-          // 下一首前延时防风控
-          const hasNext = taskQueue.some(t => t.status === 'pending');
-          if (hasNext) {
-            const dMin = Math.max(0, Math.min(10, Number(batch.delayMin) || 1));
-            const dMax = Math.max(dMin, Math.min(10, Number(batch.delayMax) || 3));
-            const delaySec = Math.floor(Math.random() * (dMax - dMin + 1)) + dMin;
-            await new Promise(r => setTimeout(r, delaySec * 1000));
-          }
+          // 并发启动所有 toRun 任务（每个任务是一个 Promise，互不阻塞）
+          const workerPromises = toRun.map(task => runSingleTask(task));
+          await Promise.all(workerPromises);
+          // 循环继续 → 再看一遍有没有可启动的
         }
       } catch (e) {
         console.error('[FNOS Queue] worker 异常:', e.message);
       } finally {
         workerRunning = false;
       }
+    };
+
+    // 执行单个任务（含重试判断 + 状态流转 + 批量完成通知）
+    const runSingleTask = async (task) => {
+      const batch = batches.get(task.batchId);
+      if (!batch) {
+        markTaskFinished(task, 'failed', '批次信息丢失');
+        globalCounter.totalFailed++;
+        return;
+      }
+
+      // 状态切到 downloading
+      task.status = 'downloading';
+      task.startedAt = Date.now();
+      task.retryCount = (task.retryCount || 0) + 1;
+      batch.stats.pending--;
+      batch.stats.downloading++;
+
+      let result = null;
+      let err = null;
+      try {
+        // 下载前判重（批量下载一律按 歌手/专辑 分类），先按各种音质看看有没有同名文件
+        const categorize = true;
+        const fileNameBase = `${task.song.name} - ${task.song.author}`;
+        for (let i = 0; i < QUALITY_FALLBACK_ORDER.length; i++) {
+          const tryQ = QUALITY_FALLBACK_ORDER[i];
+          const ext = tryQ === 'flac' ? 'flac' : 'mp3';
+          const hit = await checkExistingFile(`${fileNameBase}.${ext}`, task.song.author, task.song.album, categorize);
+          if (hit) {
+            result = { ...hit, quality: tryQ };
+            break;
+          }
+        }
+        // 没有命中已存在文件 → 正常走带音质降级的下载
+        if (!result) {
+          result = await downloadTaskWithFallback(task, batch);
+        }
+      } catch (e) {
+        err = e;
+      }
+
+      if (result) {
+        // 成功（或命中跳过，统一算 success）
+        task.status = 'success';
+        task.path = result.relativePath;
+        task.quality = result.quality;
+        if (result.skipped) task.error = '文件已存在，跳过下载';
+        batch.stats.downloading--;
+        batch.stats.success++;
+        globalCounter.totalSuccess++;
+        task.finishedAt = Date.now();
+        pushToHistory(task);
+        removeFromQueue(task);
+      } else if (err) {
+        // 失败：判断是否还能重试
+        const msg = err.message || '下载失败';
+        task.error = msg;
+        if (!task.errors) task.errors = [];
+        task.errors.push({ attempt: task.retryCount, message: msg, at: Date.now() });
+        if (task.retryCount < MAX_RETRY) {
+          // 回到 pending，指数退避
+          const waitSec = RETRY_BACKOFF[task.retryCount - 1] || 60;
+          task.status = 'pending';
+          task.retryAfter = Date.now() + waitSec * 1000;
+          batch.stats.downloading--;
+          batch.stats.pending++;
+          logDownload(`RETRY[${task.retryCount}/${MAX_RETRY}] 任务 ${task.song.name} - ${task.song.author} 失败：${msg}，${waitSec}秒后重试`);
+        } else {
+          // 重试次数耗尽，永久失败
+          batch.stats.downloading--;
+          batch.stats.failed++;
+          globalCounter.totalFailed++;
+          task.finishedAt = Date.now();
+          pushToHistory(task);
+          removeFromQueue(task);
+          logDownload(`FAIL: 任务 ${task.song.name} - ${task.song.author} 在 ${task.retryCount} 次尝试后仍失败：${msg}`);
+        }
+      }
+
+      // 任务收尾后，如果批次全部结束 → 发推送
+      const batchRemaining = taskQueue.some(t => t.batchId === task.batchId && (t.status === 'pending' || t.status === 'downloading'));
+      if (!batchRemaining) {
+        sendBatchCompletionNotification(task.batchId);
+      }
+
+      // 下一首前延时防风控（仅当确实刚下完一首非跳过的任务时生效；命中跳过则不需要延迟）
+      const hasMoreWork = taskQueue.some(t => t.status === 'pending');
+      if (hasMoreWork && !result?.skipped) {
+        const dMin = Math.max(0, Math.min(10, Number(batch.delayMin) || 1));
+        const dMax = Math.max(dMin, Math.min(10, Number(batch.delayMax) || 3));
+        const delaySec = Math.floor(Math.random() * (dMax - dMin + 1)) + dMin;
+        await new Promise(r => setTimeout(r, delaySec * 1000));
+      }
+    };
+
+    // 辅助：把任务加入 history 并裁剪
+    const pushToHistory = (task) => {
+      taskHistory.push(task);
+      while (taskHistory.length > MAX_HISTORY) taskHistory.shift();
+    };
+
+    // 辅助：把任务从 taskQueue 中移除
+    const removeFromQueue = (task) => {
+      const idx = taskQueue.indexOf(task);
+      if (idx >= 0) taskQueue.splice(idx, 1);
+    };
+
+    // 辅助：任务遇到不可恢复错误，直接判为 finished 不入 history（兼容老代码调用点）
+    const markTaskFinished = (task, status, error) => {
+      task.status = status;
+      task.error = error || '';
+      task.finishedAt = Date.now();
+      pushToHistory(task);
+      removeFromQueue(task);
     };
 
     // ========== 全局计数器（不依赖 taskHistory）==========
@@ -492,6 +605,9 @@ async function consturctServer(moduleDefs) {
           addedAt: now + i,
           startedAt: 0,
           finishedAt: 0,
+          retryCount: 0,        // 已尝试次数（首次下载=1后失败，再进来就是2、3）
+          retryAfter: 0,        // 时间戳：什么时间之后才能再次被拾取（用于指数退避）
+          errors: [],           // 历次失败原因，方便 UI 展示 / PushPlus 汇总
         }));
 
         const totalSongs = allTasks.length;
