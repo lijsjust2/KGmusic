@@ -127,6 +127,10 @@
                             <div v-if="batch.currentSongName && batch.downloading > 0" class="batch-current">
                                 <i class="fas fa-download fa-flash"></i>
                                 正在下载：{{ batch.currentSongName }}
+                                <span class="current-progress-num" v-if="batch.currentProgress > 0">{{ batch.currentProgress }}%</span>
+                                <div class="current-progress-bar" v-if="batch.currentProgress > 0">
+                                    <div class="current-progress-fill" :style="{ width: batch.currentProgress + '%' }"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -770,6 +774,29 @@ onBeforeUnmount(() => {
     display: flex;
     align-items: center;
     gap: 6px;
+    flex-wrap: wrap;
+}
+
+.current-progress-num {
+    margin-left: auto;
+    font-weight: 600;
+    font-size: 11px;
+    color: #096dd9;
+}
+
+.current-progress-bar {
+    width: 100%;
+    height: 3px;
+    background: #d6e4ff;
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.current-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #1890ff, #69b1ff);
+    border-radius: 2px;
+    transition: width 0.3s ease;
 }
 
 .fa-flash {

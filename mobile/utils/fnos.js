@@ -118,23 +118,44 @@ export async function downloadToFnos(url, fileName, artist, album, categorize = 
 
 /**
  * 批量歌曲加入后台下载队列（飞牛环境）
+ * 自动分片：每 80 首一批发送，共享同一个 batchId，避免请求体过大触发 413
  */
 export async function addToDownloadQueue(songs, quality, delayMin = 1, delayMax = 3, pushplusToken = '', folder = '') {
-  try {
-    const res = await post(
-      '/fnos/queue/add',
-      { songs, quality, delayMin, delayMax, pushplusToken, folder },
-      { timeout: 30000 }
-    )
-    if (res?.code === 0) {
-      log('已加入下载队列:', res.data?.batchId, '加入', res.data?.added, '首，跳过', res.data?.skipped, '首')
-      return { success: true, batchId: res.data?.batchId, added: res.data?.added, skipped: res.data?.skipped || 0 }
-    }
-    return { success: false, msg: res?.msg || '加入队列失败' }
-  } catch (e) {
-    log('加入下载队列失败:', e?.message)
-    return { success: false, msg: e?.message || '加入队列请求失败' }
+  const CHUNK_SIZE = 80
+  const chunks = []
+  for (let i = 0; i < songs.length; i += CHUNK_SIZE) {
+    chunks.push(songs.slice(i, i + CHUNK_SIZE))
   }
+  log(`批量下载分片：共 ${songs.length} 首，分 ${chunks.length} 批发送（每批 ${CHUNK_SIZE} 首）`)
+
+  let totalAdded = 0
+  let totalSkipped = 0
+  let batchId = null
+  let firstError = null
+
+  for (let i = 0; i < chunks.length; i++) {
+    const isAppend = i > 0 && batchId
+    const body = { songs: chunks[i], quality, delayMin, delayMax, pushplusToken, folder }
+    if (isAppend) body.batchId = batchId  // 后续分片追加到同一批次
+    try {
+      const res = await post('/fnos/queue/add', body, { timeout: 30000 })
+      if (res?.code === 0) {
+        if (!batchId) batchId = res.data?.batchId
+        totalAdded += res.data?.added || 0
+        totalSkipped += res.data?.skipped || 0
+      } else {
+        if (!firstError) firstError = res?.msg || '加入队列失败'
+      }
+    } catch (e) {
+      if (!firstError) firstError = e?.message || '加入队列请求失败'
+    }
+  }
+
+  if (totalAdded > 0) {
+    log('全部分片发送完成，共加入', totalAdded, '首，跳过', totalSkipped, '首')
+    return { success: true, batchId, added: totalAdded, skipped: totalSkipped }
+  }
+  return { success: false, msg: firstError || '加入队列失败' }
 }
 
 /**

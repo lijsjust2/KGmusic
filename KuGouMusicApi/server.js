@@ -212,8 +212,9 @@ async function consturctServer(moduleDefs) {
     };
 
     // 核心下载函数：将远程 URL 流式写入共享目录（按 歌手/专辑 分类）
+    // onProgress(loaded, total) 可选回调，用于实时上报下载进度
     // 返回 { relativePath, absPath, size, skipped?:true }
-    const downloadUrlToFile = async (url, fileName, artist, album, categorize = false) => {
+    const downloadUrlToFile = async (url, fileName, artist, album, categorize = false, onProgress) => {
       await ensureDownloadDirWritable();
 
       const { dir, filePath, relativePath } = resolveDownloadPaths(fileName, artist, album, categorize);
@@ -224,6 +225,17 @@ async function consturctServer(moduleDefs) {
 
       await fs.promises.mkdir(dir, { recursive: true });
       const response = await axios.get(url, { responseType: 'stream', timeout: 60000, maxRedirects: 5 });
+
+      // 从响应头读取 Content-Length 用于进度计算
+      const contentLength = parseInt(response.headers['content-length'] || '0', 10);
+      let downloadedBytes = 0;
+      if (onProgress && contentLength > 0) {
+        response.data.on('data', (chunk) => {
+          downloadedBytes += chunk.length;
+          const pct = Math.min(100, Math.round((downloadedBytes / contentLength) * 100));
+          onProgress(pct, downloadedBytes, contentLength);
+        });
+      }
 
       const writer = fs.createWriteStream(filePath);
       let writeError = null;
@@ -236,7 +248,10 @@ async function consturctServer(moduleDefs) {
       await new Promise((resolve, reject) => {
         writer.on('finish', () => {
           if (writeError) reject(writeError);
-          else resolve();
+          else {
+            if (onProgress) onProgress(100, contentLength, contentLength);
+            resolve();
+          }
         });
         writer.on('error', reject);
         response.data.on('error', reject);
@@ -278,6 +293,10 @@ async function consturctServer(moduleDefs) {
     const RETRY_BACKOFF = [0, 10, 30]; // 第 N 次失败后等待多少秒再重试（index=0→首次失败→10秒→index=1→30秒）
     const MAX_CONCURRENT = 3;      // 最多同时下载 3 首
     let activeDownloadCount = 0;   // 当前正在 downloading 的任务数（统计用，与 batch.stats.downloading 保持同步总和）
+
+    // 429 限流自适应：检测到酷狗返回 429 时自动拉长延迟，成功后逐步恢复
+    let rateLimitBackoff = 0;      // 当前限流退避秒数（0=正常，>0=限流中）
+    const RATE_LIMIT_MAX_BACKOFF = 120; // 限流时最长延迟 120 秒
     const QUALITY_FALLBACK_ORDER = ['flac', '320', '128'];
 
     // 内部调用 song/url 模块获取下载链接（带用户鉴权）
@@ -303,6 +322,7 @@ async function consturctServer(moduleDefs) {
     };
 
     // 带音质降级的下载（flac → 320 → 128）
+    // task 对象的 progress 字段会被实时更新（0-100）
     const downloadTaskWithFallback = async (task, batch) => {
       let startIdx = QUALITY_FALLBACK_ORDER.indexOf(task.quality);
       if (startIdx === -1) startIdx = 1; // 默认从 320 开始
@@ -310,6 +330,7 @@ async function consturctServer(moduleDefs) {
       for (let i = startIdx; i < QUALITY_FALLBACK_ORDER.length; i++) {
         const q = QUALITY_FALLBACK_ORDER[i];
         try {
+          task.progress = 0; // 重置进度
           const urlResp = await fetchSongUrl(task.song.hash, q, batch.authHeader, batch.cookiesStr);
           if (!urlResp || urlResp.status !== 1 || !urlResp.url || !urlResp.url[0]) {
             throw new Error(`获取 ${q} 下载链接失败`);
@@ -317,9 +338,12 @@ async function consturctServer(moduleDefs) {
           const downloadUrl = urlResp.url[0];
           const ext = q === 'flac' ? 'flac' : 'mp3';
           const fileName = `${task.song.name} - ${task.song.author}.${ext}`;
-          const result = await downloadUrlToFile(downloadUrl, fileName, task.song.author, task.song.album, true);
+          const onProgress = (pct) => { task.progress = pct; };
+          const result = await downloadUrlToFile(downloadUrl, fileName, task.song.author, task.song.album, true, onProgress);
+          task.progress = 100;
           return { ...result, quality: q };
         } catch (e) {
+          task.progress = 0;
           lastErr = e;
         }
       }
@@ -484,15 +508,31 @@ async function consturctServer(moduleDefs) {
         task.finishedAt = Date.now();
         pushToHistory(task);
         removeFromQueue(task);
+        // 限流恢复：成功后逐步降低退避（每次成功减半，最低回到 0）
+        if (rateLimitBackoff > 0) {
+          rateLimitBackoff = Math.max(0, Math.floor(rateLimitBackoff / 2));
+          if (rateLimitBackoff === 0) logDownload('RATE_LIMIT: 限流已恢复，延迟恢复正常');
+        }
       } else if (err) {
         // 失败：判断是否还能重试
         const msg = err.message || '下载失败';
+        // 检测 429 限流：错误信息含 429 或 status 为 429
+        const isRateLimited = err.response?.status === 429 || /429|Too Many Requests|限流|rate.?limit/i.test(msg);
+        if (isRateLimited) {
+          // 拉长限流退避（翻倍，上限 120 秒）
+          const newBackoff = Math.min(RATE_LIMIT_MAX_BACKOFF, Math.max(15, rateLimitBackoff * 2 || 15));
+          if (newBackoff > rateLimitBackoff) {
+            rateLimitBackoff = newBackoff;
+            logDownload(`RATE_LIMIT: 检测到酷狗 429 限流，延迟拉长至 ${rateLimitBackoff} 秒`);
+          }
+        }
         task.error = msg;
         if (!task.errors) task.errors = [];
         task.errors.push({ attempt: task.retryCount, message: msg, at: Date.now() });
         if (task.retryCount < MAX_RETRY) {
-          // 回到 pending，指数退避
-          const waitSec = RETRY_BACKOFF[task.retryCount - 1] || 60;
+          // 回到 pending，指数退避（限流时额外加上 rateLimitBackoff）
+          const baseWait = RETRY_BACKOFF[task.retryCount - 1] || 60;
+          const waitSec = baseWait + (isRateLimited ? rateLimitBackoff : 0);
           task.status = 'pending';
           task.retryAfter = Date.now() + waitSec * 1000;
           batch.stats.downloading--;
@@ -517,11 +557,12 @@ async function consturctServer(moduleDefs) {
       }
 
       // 下一首前延时防风控（仅当确实刚下完一首非跳过的任务时生效；命中跳过则不需要延迟）
+      // 限流期间额外加上 rateLimitBackoff 秒延迟
       const hasMoreWork = taskQueue.some(t => t.status === 'pending');
       if (hasMoreWork && !result?.skipped) {
         const dMin = Math.max(0, Math.min(10, Number(batch.delayMin) || 1));
         const dMax = Math.max(dMin, Math.min(10, Number(batch.delayMax) || 3));
-        const delaySec = Math.floor(Math.random() * (dMax - dMin + 1)) + dMin;
+        const delaySec = Math.floor(Math.random() * (dMax - dMin + 1)) + dMin + rateLimitBackoff;
         await new Promise(r => setTimeout(r, delaySec * 1000));
       }
     };
@@ -554,39 +595,45 @@ async function consturctServer(moduleDefs) {
       totalCancelled: 0,
     };
 
-    // 添加任务到队列
+    // 添加任务到队列（支持分片追加：前端传入已有 batchId 时追加到同一批次）
     app.post('/fnos/queue/add', async (req, res) => {
       try {
-        const { songs, quality, delayMin, delayMax, pushplusToken } = req.body || {};
+        const { songs, quality, delayMin, delayMax, pushplusToken, batchId: reqBatchId } = req.body || {};
         if (!Array.isArray(songs) || songs.length === 0) {
           return res.status(400).json({ code: 1, msg: '缺少 songs 参数' });
         }
-        const batchId = `b_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const authHeader = req.headers['authorization'] || '';
         const cookiesStr = req.headers['cookie'] || '';
         const qualityVal = (quality && typeof quality === 'object') ? (quality.quality || '320') : (quality || '320');
 
-        batches.set(batchId, {
-          authHeader,
-          cookiesStr,
-          addedAt: Date.now(),
-          quality: qualityVal,
-          delayMin: Number(delayMin) || 1,
-          delayMax: Number(delayMax) || 3,
-          pushplusToken: pushplusToken || '',
-          // 批次统计，不依赖 taskHistory
-          stats: {
-            total: 0,
-            pending: 0,
-            downloading: 0,
-            success: 0,
-            failed: 0,
-            cancelled: 0,
-          },
-          // 为了批次名显示收集专辑信息（不依赖 taskHistory）
-          albums: new Set(),
-          firstAlbumName: '',
-        });
+        // 如果前端传了已有 batchId 且 batches 中存在 → 追加模式
+        let batchId;
+        let isAppend = false;
+        if (reqBatchId && batches.has(reqBatchId)) {
+          batchId = reqBatchId;
+          isAppend = true;
+        } else {
+          batchId = `b_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          batches.set(batchId, {
+            authHeader,
+            cookiesStr,
+            addedAt: Date.now(),
+            quality: qualityVal,
+            delayMin: Number(delayMin) || 1,
+            delayMax: Number(delayMax) || 3,
+            pushplusToken: pushplusToken || '',
+            stats: {
+              total: 0,
+              pending: 0,
+              downloading: 0,
+              success: 0,
+              failed: 0,
+              cancelled: 0,
+            },
+            albums: new Set(),
+            firstAlbumName: '',
+          });
+        }
 
         const now = Date.now();
         const allTasks = songs.map((song, i) => ({
@@ -621,11 +668,11 @@ async function consturctServer(moduleDefs) {
 
         taskQueue.push(...tasks);
 
-        // 初始化批次统计（不依赖 taskHistory）
+        // 更新批次统计（追加模式累加，首次模式初始化）
         const batch = batches.get(batchId);
         if (batch) {
-          batch.stats.total = tasks.length;
-          batch.stats.pending = tasks.length;
+          batch.stats.total += tasks.length;
+          batch.stats.pending += tasks.length;
           tasks.forEach(t => {
             const albumName = t.song.album || '未知专辑';
             batch.albums.add(albumName);
@@ -676,6 +723,7 @@ async function consturctServer(moduleDefs) {
           quality: batch.quality,
           firstAlbumName: batch.firstAlbumName,
           currentSongName: activeTask ? activeTask.song.name : '',
+          currentProgress: activeTask ? (activeTask.progress || 0) : 0,
           albumCount: batch.albums.size,
           albums: Array.from(batch.albums),
         });
@@ -696,7 +744,7 @@ async function consturctServer(moduleDefs) {
           historyCount: taskHistory.length,
           totalSuccess,
           totalFailed,
-          active: active.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality, startedAt: t.startedAt })),
+          active: active.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality, startedAt: t.startedAt, progress: t.progress || 0 })),
           pending: pending.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality })),
           recent: recent.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality, status: t.status, error: t.error, path: t.path, finishedAt: t.finishedAt })),
           batches: batchesArr,
