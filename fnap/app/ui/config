@@ -6,7 +6,7 @@
       "type": "iframe",
       "protocol": "http",
       "port": "8880",
-      "url": "/",
+      "url": "/?fnos_app=1",
       "allUsers": true
     }
   }

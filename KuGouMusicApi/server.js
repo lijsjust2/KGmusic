@@ -119,9 +119,13 @@ async function consturctServer(moduleDefs) {
     next();
   });
 
-  // Body Parser
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: false }));
+  // 批量下载队列专用：body 可能携带一整张专辑的歌曲元数据，单独放大到 50MB
+  // （必须写在全局 express.json 前面，让该路径优先使用大限制，解析完 req.body 后全局中间件会自动跳过）
+  app.post('/fnos/queue/add', express.json({ limit: '50mb' }));
+
+  // Body Parser（全局默认 1MB，兼顾安全与常规业务场景）
+  app.use(express.json({ limit: '1mb' }));
+  app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
   /**
    * Serving static files

@@ -176,15 +176,23 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
-import { getDownloadQueueStatus, cancelDownloadQueue, clearDownloadHistory } from '../utils/fnos';
+import { getDownloadQueueStatus, cancelDownloadQueue, clearDownloadHistory, detectFnosClientMode } from '../utils/fnos';
 import message from '../utils/message';
 
-const POLL_INTERVAL = 3000; // 3 秒轮询一次
+// 客户端压根不是从飞牛桌面入口打开的（外部浏览器直连 8880）
+// 整个组件不做任何事：不启动轮询、不显示悬浮窗、不监听事件
+const _isFnosClient = detectFnosClientMode();
+
+// 轮询频率：有任务时高频，无任务时空闲低频，避免无意义刷接口
+const POLL_ACTIVE_MS = 3000;   // 有任务 / 悬浮窗显示中：3 秒
+const POLL_IDLE_MS = 30000;   // 无任务且悬浮窗不显示：30 秒
+const IDLE_STOP_AFTER = 20;   // 连续 20 次（约 10 分钟）都空闲 → 停止轮询，等事件唤醒
 
 const status = ref(null);
 const panelOpen = ref(false);
 let timer = null;
 let consecutiveErrors = 0;
+let idleRounds = 0; // 连续空闲计数（没任务、也没最近完成）
 
 const pendingCount = computed(() => status.value?.pendingCount || 0);
 const activeCount = computed(() => status.value?.activeCount || 0);
@@ -198,7 +206,9 @@ const hasTasks = computed(() => (pendingCount.value + activeCount.value) > 0);
 const remainingCount = computed(() => pendingCount.value + activeCount.value);
 
 // 是否显示悬浮按钮：有未完成任务，或最近 30 分钟内有完成记录
+// 额外 gate：非飞牛客户端打开（浏览器直连 8880）时一律不显示
 const showFloating = computed(() => {
+    if (!_isFnosClient) return false;
     if (!status.value) return false;
     if (hasTasks.value) return true;
     // 检查用户是否手动关闭过（关闭后 30 分钟内不再显示已完成状态）
@@ -249,6 +259,25 @@ const fetchStatus = async () => {
     if (data) {
         status.value = data;
         consecutiveErrors = 0;
+
+        // 根据当前状态动态调整轮询频率
+        const curHasTasks = (pendingCount.value + activeCount.value) > 0;
+        const curShowFloat = showFloating.value;
+        const isActive = curHasTasks || curShowFloat || panelOpen.value;
+
+        if (isActive) {
+            // 有任务 / 悬浮窗正显示 / 面板打开着 → 高频
+            idleRounds = 0;
+            ensurePollInterval(POLL_ACTIVE_MS);
+        } else {
+            // 无任务且悬浮窗没显示 → 低频，累计到阈值后彻底停
+            idleRounds++;
+            if (idleRounds >= IDLE_STOP_AFTER) {
+                stopPolling();
+            } else {
+                ensurePollInterval(POLL_IDLE_MS);
+            }
+        }
     } else {
         consecutiveErrors++;
         // 连续失败 5 次后停止轮询（非飞牛环境）
@@ -259,10 +288,42 @@ const fetchStatus = async () => {
     }
 };
 
+// 启动 / 重启轮询，并切换间隔（如果当前间隔与目标不同才重置定时器，避免频繁抖动）
+const ensurePollInterval = (targetMs) => {
+    if (!timer) {
+        timer = setInterval(fetchStatus, targetMs);
+        return;
+    }
+    // setInterval 没有直接改间隔的 API，比较当前毫秒数差异再决定要不要重建
+    // 这里用「目标间隔和当前间隔差 ≥1s 才重建」的简单策略
+    const currentInterval = timer._intervalMs || POLL_IDLE_MS;
+    if (Math.abs(currentInterval - targetMs) >= 1000) {
+        clearInterval(timer);
+        timer = setInterval(fetchStatus, targetMs);
+    }
+    timer._intervalMs = targetMs;
+};
+
+// 强制唤醒轮询（添加任务、页面重新可见时调用）
+const wakeUpPolling = () => {
+    idleRounds = 0;
+    if (!timer) {
+        fetchStatus();
+        timer = setInterval(fetchStatus, POLL_ACTIVE_MS);
+        timer._intervalMs = POLL_ACTIVE_MS;
+    } else {
+        // 立刻拉一次 + 切回高频
+        ensurePollInterval(POLL_ACTIVE_MS);
+        fetchStatus();
+    }
+};
+
 const startPolling = () => {
     stopPolling();
+    idleRounds = 0;
     fetchStatus();
-    timer = setInterval(fetchStatus, POLL_INTERVAL);
+    timer = setInterval(fetchStatus, POLL_IDLE_MS);
+    timer._intervalMs = POLL_IDLE_MS;
 };
 
 const stopPolling = () => {
@@ -319,15 +380,22 @@ const clearHistory = async () => {
 };
 
 onMounted(() => {
+    // 外部浏览器打开（非飞牛内嵌入口）：整个组件不工作，也不挂任何监听
+    if (!_isFnosClient) return;
+
     startPolling();
-    // 页面重新可见时立即刷新（从其他页面/重开飞牛回来）
+    // 页面重新可见（重开飞牛/切回标签页）时立即唤醒
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) fetchStatus();
+        if (!document.hidden) wakeUpPolling();
     });
+    // 监听 BatchDownloadManager 添加完任务后发出的事件，立刻刷新悬浮窗
+    window.addEventListener('kgmusic:task-added', wakeUpPolling);
 });
 
 onBeforeUnmount(() => {
     stopPolling();
+    if (!_isFnosClient) return;
+    window.removeEventListener('kgmusic:task-added', wakeUpPolling);
 });
 </script>
 

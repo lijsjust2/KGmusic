@@ -699,9 +699,10 @@ const generateFileName = (quality) => {
 const triggerDownload = async (url, quality) => {
   const fileName = generateFileName(quality)
   
-  // 飞牛环境：通过后端下载到共享目录，跳过浏览器下载
+  // 只有「客户端飞牛内嵌打开 + 服务端在飞牛容器」同时满足，才下载到飞牛共享目录
+  // 其余情况（容器在飞牛但用户是局域网浏览器直连 8880 等）一律走浏览器本地下载
   const fnosStatus = await checkFnosEnv()
-  if (fnosStatus.isFnos) {
+  if (fnosStatus.enabled) {
     const artist = getSongArtist()
     const album = props.song.album_name || props.song.album || '未知专辑'
     const result = await downloadToFnos(url, fileName, artist, album)

@@ -4,31 +4,80 @@ const log = (...args) => {
   console.log('[fnos]', ...args)
 }
 
+const CLIENT_FLAG_KEY = 'KGmusic_fnosClientMode'
+const URL_QUERY_FLAG = 'fnos_app'
+
 let fnosStatus = null
 let statusChecked = false
 let checkingPromise = null
 
 /**
- * 检测当前是否运行在飞牛 fnOS 环境下
- * 首次调用会请求后端 /fnos/status，后续返回缓存结果
- * @returns {Promise<{isFnos: boolean, downloadDir: string, enabled: boolean}>}
+ * 检测「客户端是否是从飞牛内嵌入口打开」
+ *  优先级：
+ *   1. 当前 URL query 带 ?fnos_app=1（飞牛桌面图标点开时 fnap/app/ui/config 写入）
+ *   2. localStorage 中缓存了 KGmusic_fnosClientMode=1（用户通过飞牛入口访问过一次后 SPA 路由跳转不会丢）
+ *
+ *  注意：外部浏览器直接访问 IP:8880 时，两者都不存在，因此返回 false
+ */
+export function detectFnosClientMode() {
+  try {
+    const params = new URLSearchParams(window.location.search)
+    const fromUrl = params.get(URL_QUERY_FLAG)
+    if (fromUrl === '1' || fromUrl === 'true') {
+      localStorage.setItem(CLIENT_FLAG_KEY, '1')
+      return true
+    }
+    // 兜底：hash 路由下 query 可能写在 hash 里，比如 /#/?fnos_app=1
+    const hash = window.location.hash || ''
+    if (hash.includes(`${URL_QUERY_FLAG}=1`) || hash.includes(`${URL_QUERY_FLAG}=true`)) {
+      localStorage.setItem(CLIENT_FLAG_KEY, '1')
+      return true
+    }
+    return localStorage.getItem(CLIENT_FLAG_KEY) === '1'
+  } catch (e) {
+    return false
+  }
+}
+
+/**
+ * 手动清除客户端飞牛标识（用于调试）
+ */
+export function clearFnosClientMode() {
+  try { localStorage.removeItem(CLIENT_FLAG_KEY) } catch (_) { /* ignore */ }
+}
+
+/**
+ * 检测当前是否启用「飞牛下载到共享目录」模式
+ * 启用必须同时满足：
+ *   1. 服务端跑在飞牛容器内（process.env.FNOS_ENV=true，即 /fnos/status 返回 isFnos: true）
+ *   2. 客户端是从飞牛桌面内嵌入口打开（URL 带 ?fnos_app=1 或有 localStorage 标记）
+ * 否则（比如容器在飞牛里但用户是局域网 PC 浏览器直连 8880）→ 统一走浏览器下载
+ *
+ * @returns {Promise<{
+ *   isFnosServer: boolean,   // 服务端是否在飞牛容器（有共享目录写入能力）
+ *   isFnosClient: boolean,   // 客户端是否从飞牛内嵌入口打开
+ *   enabled: boolean,        // 两者同时为 true → 允许下载到飞牛共享目录
+ *   downloadDir: string,     // 飞牛共享目录容器内路径（仅 enabled=true 时有意义）
+ * }>}
  */
 export async function checkFnosEnv() {
   if (statusChecked) return fnosStatus
   if (checkingPromise) return checkingPromise
 
+  const isFnosClient = detectFnosClientMode()
+
   checkingPromise = (async () => {
     try {
       const res = await get('/fnos/status', {}, { timeout: 5000 })
-      fnosStatus = {
-        isFnos: !!res?.isFnos,
-        downloadDir: res?.downloadDir || '',
-        enabled: !!res?.enabled,
-      }
-      log('飞牛环境检测结果:', fnosStatus)
+      const isFnosServer = !!res?.isFnos
+      const downloadDir = res?.downloadDir || ''
+      const enabled = isFnosServer && isFnosClient
+
+      fnosStatus = { isFnosServer, isFnosClient, enabled, downloadDir }
+      log('环境检测结果:', fnosStatus)
     } catch (e) {
-      log('飞牛环境检测失败，视为非飞牛环境:', e?.message)
-      fnosStatus = { isFnos: false, downloadDir: '', enabled: false }
+      log('环境检测请求失败，视为普通浏览器环境:', e?.message)
+      fnosStatus = { isFnosServer: false, isFnosClient, enabled: false, downloadDir: '' }
     }
     statusChecked = true
     checkingPromise = null
@@ -39,24 +88,15 @@ export async function checkFnosEnv() {
 }
 
 /**
- * 同步获取已缓存的飞牛环境状态
- * 如果尚未检测过，返回默认的非飞牛状态
- * @returns {{isFnos: boolean, downloadDir: string, enabled: boolean}}
+ * 同步获取已缓存的飞牛环境状态（未检测过则返回默认的非启用状态）
  */
 export function getFnosStatus() {
-  return fnosStatus || { isFnos: false, downloadDir: '', enabled: false }
+  return fnosStatus || { isFnosServer: false, isFnosClient: false, enabled: false, downloadDir: '' }
 }
 
 /**
  * 在飞牛环境下，通过后端下载文件到共享目录
- * @param {string} url 音频文件下载URL
- * @param {string} fileName 保存的文件名
- * @param {string} artist 歌手名（仅 categorize=true 时使用）
- * @param {string} album 专辑名（仅 categorize=true 时使用）
- * @param {boolean} [categorize=false] 是否按「歌手/专辑」分类存储
- *   - true：批量下载（/download/ 页面）按「歌手/专辑/文件名」分类
- *   - false（默认）：单曲及其他列表下载直接放到根目录，不分类
- * @returns {Promise<{success: boolean, path?: string, msg?: string}>}
+ * （注意：调用方应先确认 fnosStatus.enabled 再调用）
  */
 export async function downloadToFnos(url, fileName, artist, album, categorize = false) {
   try {
@@ -78,18 +118,12 @@ export async function downloadToFnos(url, fileName, artist, album, categorize = 
 
 /**
  * 批量歌曲加入后台下载队列（飞牛环境）
- * 关闭页面/飞牛后任务仍会在容器内继续执行，重新打开应用可见悬浮提示
- * @param {Array} songs 歌曲列表
- * @param {Object|string} quality 音质配置（对象 {quality:'flac'} 或字符串）
- * @param {number} delayMin 防风控最小延时（秒）
- * @param {number} delayMax 防风控最大延时（秒）
- * @returns {Promise<{success:boolean, batchId?:string, added?:number, msg?:string}>}
  */
-export async function addToDownloadQueue(songs, quality, delayMin = 1, delayMax = 3, pushplusToken = '') {
+export async function addToDownloadQueue(songs, quality, delayMin = 1, delayMax = 3, pushplusToken = '', folder = '') {
   try {
     const res = await post(
       '/fnos/queue/add',
-      { songs, quality, delayMin, delayMax, pushplusToken },
+      { songs, quality, delayMin, delayMax, pushplusToken, folder },
       { timeout: 30000 }
     )
     if (res?.code === 0) {
@@ -104,10 +138,11 @@ export async function addToDownloadQueue(songs, quality, delayMin = 1, delayMax 
 }
 
 /**
- * 查询后台下载队列状态（前端轮询用）
- * @returns {Promise<Object|null>} 队列状态数据，非飞牛环境或失败返回 null
+ * 查询后台下载队列状态（仅飞牛客户端模式下有意义，非飞牛环境返回 null 让上层停止轮询）
  */
 export async function getDownloadQueueStatus() {
+  // 客户端压根不是飞牛入口打开的，就没必要请求（省带宽，也避免显示悬浮窗）
+  if (!detectFnosClientMode()) return null
   try {
     const res = await get('/fnos/queue/status', {}, { timeout: 5000 })
     if (res?.code === 0) return res.data
@@ -119,8 +154,6 @@ export async function getDownloadQueueStatus() {
 
 /**
  * 取消下载队列中的待执行任务
- * @param {Object} param0 { batchId, taskId, all }
- * @returns {Promise<{success:boolean, cancelled?:number, msg?:string}>}
  */
 export async function cancelDownloadQueue({ batchId, taskId, all } = {}) {
   try {
@@ -136,7 +169,6 @@ export async function cancelDownloadQueue({ batchId, taskId, all } = {}) {
 
 /**
  * 清空下载历史记录
- * @returns {Promise<{success:boolean, cleared?:number, msg?:string}>}
  */
 export async function clearDownloadHistory() {
   try {
@@ -147,5 +179,31 @@ export async function clearDownloadHistory() {
     return { success: false, msg: res?.msg || '清空失败' }
   } catch (e) {
     return { success: false, msg: e?.message || '清空请求失败' }
+  }
+}
+
+/**
+ * 查询飞牛授权的共享目录列表（用于「下载目录选择」）
+ */
+export async function listSharedFolders() {
+  try {
+    const res = await get('/fnos/shared-folders', {}, { timeout: 15000 })
+    if (res?.code === 0) return { success: true, folders: res.data?.folders || [], _debug: res.data?._debug || null }
+    return { success: false, msg: res?.msg || '获取共享目录失败', _debug: res?._debug || null }
+  } catch (e) {
+    return { success: false, msg: e?.message || '获取共享目录请求失败' }
+  }
+}
+
+/**
+ * 刷新共享目录列表（强制重新读取授权配置）
+ */
+export async function refreshSharedFolders() {
+  try {
+    const res = await post('/fnos/shared-folders/refresh', {}, { timeout: 20000 })
+    if (res?.code === 0) return { success: true, folders: res.data?.folders || [], _debug: res.data?._debug || null }
+    return { success: false, msg: res?.msg || '刷新共享目录失败', _debug: res?._debug || null }
+  } catch (e) {
+    return { success: false, msg: e?.message || '刷新共享目录请求失败' }
   }
 }

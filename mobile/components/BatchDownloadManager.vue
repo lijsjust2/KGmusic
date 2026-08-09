@@ -321,9 +321,9 @@ const handleQualitySelect = async (quality) => {
     await nextTick();
     await sleep(300);
 
-    // 飞牛环境：直接加入后台下载队列，关闭页面/飞牛后任务仍会继续
+    // 客户端飞牛内嵌模式 + 服务端飞牛容器同时满足：加入后台下载队列（关闭页面/飞牛后继续）
     const fnosStatus = await checkFnosEnv();
-    if (fnosStatus.isFnos) {
+    if (fnosStatus.enabled) {
         useFileSystemAccess.value = false;
         console.log('[BatchDownload] 检测到飞牛环境，加入后台下载队列');
 
@@ -345,6 +345,10 @@ const handleQualitySelect = async (quality) => {
             );
             if (result.success) {
                 message.success(`已添加到下载列表，共 ${result.added} 首歌曲`);
+                // 通知悬浮任务提醒窗：立即唤醒 + 切回高频刷新
+                try {
+                    window.dispatchEvent(new CustomEvent('kgmusic:task-added', { detail: { batchId: result.batchId, added: result.added } }));
+                } catch (_) { /* 忽略 CustomEvent 兼容问题 */ }
                 emit('download-complete', {
                     songs: props.songs,
                     quality: quality,
@@ -555,9 +559,9 @@ const downloadSong = async (song, quality) => {
             
             console.log('[BatchDownload] 下载URL:', downloadUrl, '推测格式:', fileExtHint);
             
-            // 飞牛环境：直接通过后端下载到共享目录
+            // 客户端飞牛内嵌 + 服务端飞牛容器：通过后端下载到共享目录
             const fnosStatus = getFnosStatus();
-            if (fnosStatus.isFnos) {
+            if (fnosStatus.enabled) {
                 const songInfo = song.songInfo || {};
                 const artist = songInfo.author || song.author || song.singer_name || '未知歌手';
                 const album = songInfo.album || song.album || song.album_name || '未知专辑';
