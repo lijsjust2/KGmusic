@@ -417,10 +417,16 @@ const artistLookupMsg = ref('');
 // 正在请求中的 id，避免重复请求
 const _lookupPendingId = ref('');
 
+// 记录上次查询的ID，用于检测ID是否发生了变化
+let _lastLookupId = '';
+
 // 统一的歌手名查询函数：先查缓存 → 命中立即显示 → 未命中再请求 API
 // 可被失焦、页面加载、路由变化、ID变化多处调用
 const lookupArtistName = async (id) => {
     const trimmedId = String(id || '').trim();
+    const idChanged = trimmedId !== _lastLookupId;
+    _lastLookupId = trimmedId;
+
     if (!trimmedId) {
         artistName.value = '';
         artistLookupStatus.value = 'idle';
@@ -428,12 +434,17 @@ const lookupArtistName = async (id) => {
         return;
     }
 
-    // 先查缓存，命中则立即显示
+    // 先查缓存
     const cachedName = getCachedArtist(trimmedId);
+
     if (cachedName) {
+        // 缓存命中：立即显示（歌手ID变化时也不会闪烁旧值）
         artistName.value = cachedName;
         artistLookupStatus.value = 'success';
         artistLookupMsg.value = '';
+    } else if (idChanged) {
+        // **关键修复**：ID变化了且缓存没命中 → 立刻清空旧歌手名，避免显示上一个歌手
+        artistName.value = '';
     }
 
     // 同一个 id 正在请求中，跳过
@@ -922,20 +933,22 @@ const queryArtist = async () => {
     }
 };
 
-// 监听路由参数变化，自动填入歌手ID并查询歌手名
+// 监听歌手ID变化：无论来自路由参数、手动输入、还是页面缓存，变化后立即查询歌手名
+watch(artistId, (newVal) => {
+    const id = String(newVal || '').trim();
+    if (id) lookupArtistName(id);
+}, { immediate: false });
+
+// 监听路由参数变化，自动填入歌手ID（填入后上面的 watch 会自动触发查询）
 watch(() => route.query.artistId, (newArtistId) => {
     if (newArtistId) {
         artistId.value = String(newArtistId);
-        lookupArtistName(newArtistId);
     }
 }, { immediate: true });
 
-// 页面加载时：加载缓存的下载路径名；如果输入框里已有ID（从localStorage恢复的），立即查询歌手名
+// 页面加载时：加载缓存的下载路径名
 onMounted(() => {
     loadDownloadPathName();
-    if (artistId.value) {
-        lookupArtistName(artistId.value);
-    }
 });
 
 // 后台加载所有专辑的歌曲
