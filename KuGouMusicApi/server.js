@@ -180,9 +180,469 @@ async function consturctServer(moduleDefs) {
       }
     };
 
-    // 核心下载函数：将远程 URL 流式写入共享目录（按 歌手/专辑 分类）
-    // 返回 { relativePath, absPath, size }
-    const downloadUrlToFile = async (url, fileName, artist, album, categorize = false) => {
+    // ==================== 元数据获取（后端调用自身 API）====================
+
+    // 通过 hash 获取歌曲详细信息（privilege/lite → krm/audio）
+    const fetchSongInfoServer = async (hash, authHeader, cookiesStr) => {
+      const port = Number(process.env.PORT || '3000');
+      const base = `http://127.0.0.1:${port}`;
+      const headers = {
+        ...(authHeader ? { Authorization: authHeader } : {}),
+        ...(cookiesStr ? { Cookie: cookiesStr } : {}),
+      };
+
+      try {
+        // 1. 调用 /privilege/lite 获取基本信息
+        const privResp = await axios.get(`${base}/privilege/lite`, {
+          params: { hash }, headers, timeout: 10000,
+        });
+        if (privResp.data.status !== 1 || !privResp.data.data?.length) return null;
+
+        const songData = privResp.data.data[0];
+        const albumAudioId = songData.album_audio_id;
+
+        // 2. 如果有 album_audio_id，调用 /krm/audio 获取详细信息
+        if (albumAudioId) {
+          const krmResp = await axios.get(`${base}/krm/audio`, {
+            params: { album_audio_id: albumAudioId }, headers, timeout: 10000,
+          });
+          if (krmResp.data.status === 1 && krmResp.data.data?.length) {
+            const ad = krmResp.data.data[0];
+            const b = ad.base || {};
+            const ai = ad.album_info || {};
+            const au = ad.author_info || {};
+
+            let coverUrl = '';
+            if (ai.cover) {
+              coverUrl = ai.cover.replace('{size}', '720').replace(/[`"]/g, '').trim();
+            } else if (b.sizable_cover) {
+              coverUrl = b.sizable_cover.replace('{size}', '720').replace(/[`"]/g, '').trim();
+            }
+
+            return {
+              name: b.songname || b.audio_name || ad.name || '',
+              author: b.author_name || au.author_name || '',
+              album: ai.album_name || b.album_name || '',
+              album_id: String(ai.album_id || b.album_id || ''),
+              publish_date: b.publish_date || ai.publish_date || '',
+              cover: coverUrl,
+              hash: b.hash || ad.hash || hash,
+              track: String(b.track || ad.track || ''),
+              disc: String(b.disc || ad.disc || ''),
+              album_artist: au.author_name || b.author_name || '',
+            };
+          }
+        }
+
+        // 3. 回退到 privilege 基本信息
+        const info = songData.info || {};
+        const imgUrl = info.image || songData.trans_param?.union_cover || '';
+        return {
+          name: songData.name || songData.songname || '',
+          author: songData.singername || '',
+          album: songData.albumname || '',
+          album_id: String(songData.album_id || ''),
+          publish_date: songData.publish_date || '',
+          cover: imgUrl ? imgUrl.replace('{size}', '720').replace(/[`"]/g, '').trim() : '',
+          hash: songData.hash || hash,
+          track: String(songData.track || info.track || ''),
+          disc: String(songData.disc || info.disc || ''),
+          album_artist: songData.singername || '',
+        };
+      } catch (e) {
+        logDownload(`WARN: 获取歌曲信息失败 hash=${hash}: ${e.message}`);
+        return null;
+      }
+    };
+
+    // 通过 hash 获取歌词（search/lyric → lyric）
+    const fetchLyricsServer = async (hash, authHeader, cookiesStr) => {
+      const port = Number(process.env.PORT || '3000');
+      const base = `http://127.0.0.1:${port}`;
+      const headers = {
+        ...(authHeader ? { Authorization: authHeader } : {}),
+        ...(cookiesStr ? { Cookie: cookiesStr } : {}),
+      };
+
+      try {
+        const searchResp = await axios.get(`${base}/search/lyric`, {
+          params: { hash }, headers, timeout: 10000,
+        });
+        if (searchResp.data.status !== 200 || !searchResp.data.candidates?.length) return null;
+
+        const cand = searchResp.data.candidates[0];
+        if (!cand.id || !cand.accesskey) return null;
+
+        const lyricResp = await axios.get(`${base}/lyric`, {
+          params: { id: cand.id, accesskey: cand.accesskey, fmt: 'lrc', decode: true },
+          headers, timeout: 10000,
+        });
+        if (lyricResp.data.status === 200) {
+          return lyricResp.data.decodeContent || lyricResp.data.content || null;
+        }
+        return null;
+      } catch (e) {
+        logDownload(`WARN: 获取歌词失败 hash=${hash}: ${e.message}`);
+        return null;
+      }
+    };
+
+    // 下载封面图到 Buffer
+    const fetchCoverBuffer = async (coverUrl) => {
+      if (!coverUrl) return null;
+      try {
+        const resp = await axios.get(coverUrl, { responseType: 'arraybuffer', timeout: 15000 });
+        return Buffer.from(resp.data);
+      } catch (e) {
+        logDownload(`WARN: 获取封面失败 ${coverUrl}: ${e.message}`);
+        return null;
+      }
+    };
+
+    // 统一获取元数据（歌曲信息 + 歌词 + 封面），返回 logs 数组供前端透传
+    const fetchMetadataForSong = async (hash, quality, authHeader, cookiesStr) => {
+      if (!hash) return null;
+      const logs = [];
+      try {
+        logs.push(`开始获取元数据, hash: ${hash}`);
+        const [songInfo, lyrics] = await Promise.all([
+          fetchSongInfoServer(hash, authHeader, cookiesStr),
+          fetchLyricsServer(hash, authHeader, cookiesStr),
+        ]);
+
+        let coverBuffer = null;
+        if (songInfo?.cover) {
+          coverBuffer = await fetchCoverBuffer(songInfo.cover);
+        }
+
+        const summary = `元数据获取完成: ${songInfo?.name || '未知'} - ${songInfo?.author || '未知'}, 歌词: ${lyrics ? '有' : '无'}, 封面: ${coverBuffer ? '有' : '无'}`;
+        logs.push(summary);
+        console.log(`[FNOS] ${summary}`);
+        return { songInfo, coverBuffer, lyrics, quality, logs };
+      } catch (e) {
+        logs.push(`获取元数据失败: ${e.message}，将下载无标签文件`);
+        logDownload(`WARN: 获取元数据失败 hash=${hash}: ${e.message}，将下载无标签文件`);
+        return { songInfo: null, coverBuffer: null, lyrics: null, quality, logs };
+      }
+    };
+
+    // ==================== 标签写入（纯 Node.js 实现，无外部依赖）====================
+
+    // 检测图片 MIME 类型
+    const detectImageMime = (buf) => {
+      if (!buf || buf.length < 4) return 'image/jpeg';
+      if (buf[0] === 0xFF && buf[1] === 0xD8) return 'image/jpeg';
+      if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'image/png';
+      if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'image/gif';
+      if (buf[0] === 0x42 && buf[1] === 0x4D) return 'image/bmp';
+      if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+          buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'image/webp';
+      return 'image/jpeg';
+    };
+
+    // 从发行日期提取年份
+    const extractYear = (publishDate) => {
+      if (publishDate) {
+        const m = publishDate.match(/(\d{4})/);
+        if (m) return m[1];
+      }
+      return String(new Date().getFullYear());
+    };
+
+    // ---- ID3v2.3 标签写入（MP3）----
+
+    // 构造 ID3v2.3 文本帧（UTF-16 编码）
+    const makeId3TextFrame = (id, text) => {
+      const textBuf = Buffer.from(text || '', 'utf16le');
+      const data = Buffer.concat([
+        Buffer.from([0x01]),        // 编码: UTF-16 with BOM
+        Buffer.from([0xFF, 0xFE]),  // BOM (little-endian)
+        textBuf,
+        Buffer.from([0x00, 0x00]),  // UTF-16 null terminator
+      ]);
+      const header = Buffer.alloc(10);
+      header.write(id, 0, 'ascii');
+      header.writeUInt32BE(data.length, 4);  // v2.3 帧大小为常规 32 位整数
+      return Buffer.concat([header, data]);
+    };
+
+    // 写入 ID3v2.3 标签到 MP3 文件
+    const writeId3Tags = (filePath, songInfo, coverBuffer, lyrics) => {
+      const frames = [];
+
+      frames.push(makeId3TextFrame('TIT2', songInfo.name || '未知歌曲'));
+      frames.push(makeId3TextFrame('TPE1', songInfo.author || '未知歌手'));
+      frames.push(makeId3TextFrame('TALB', songInfo.album || '未知专辑'));
+      frames.push(makeId3TextFrame('TYER', extractYear(songInfo.publish_date)));
+      frames.push(makeId3TextFrame('TCON', 'Music'));
+
+      const albumArtist = songInfo.album_artist || songInfo.author || '';
+      if (albumArtist) frames.push(makeId3TextFrame('TPE2', albumArtist));
+
+      // TRCK 帧（音轨号）
+      if (songInfo.track) {
+        frames.push(makeId3TextFrame('TRCK', String(songInfo.track)));
+      }
+
+      // APIC 帧（封面图）
+      if (coverBuffer) {
+        const mime = detectImageMime(coverBuffer);
+        const mimeBuf = Buffer.from(mime + '\0', 'ascii');  // null-terminated ISO-8859-1
+        const data = Buffer.concat([
+          Buffer.from([0x00]),       // 编码: ISO-8859-1（仅用于 description）
+          mimeBuf,                    // MIME type + null
+          Buffer.from([0x03]),       // picture type: front cover
+          Buffer.from([0x00]),       // empty description (null terminator)
+          coverBuffer,                // 图片数据
+        ]);
+        const header = Buffer.alloc(10);
+        header.write('APIC', 0, 'ascii');
+        header.writeUInt32BE(data.length, 4);
+        frames.push(Buffer.concat([header, data]));
+      }
+
+      // USLT 帧（歌词）
+      if (lyrics) {
+        const textBuf = Buffer.from(lyrics, 'utf16le');
+        const data = Buffer.concat([
+          Buffer.from([0x01]),                // 编码: UTF-16
+          Buffer.from('chi', 'ascii'),        // 语言: chi
+          Buffer.from([0xFF, 0xFE, 0x00, 0x00]), // empty description (BOM + null)
+          Buffer.from([0xFF, 0xFE]),          // BOM
+          textBuf,                            // 歌词文本
+        ]);
+        const header = Buffer.alloc(10);
+        header.write('USLT', 0, 'ascii');
+        header.writeUInt32BE(data.length, 4);
+        frames.push(Buffer.concat([header, data]));
+      }
+
+      // COMM 帧（注释）
+      {
+        const commentText = Buffer.from('Downloaded by KGmusic', 'utf16le');
+        const data = Buffer.concat([
+          Buffer.from([0x01]),                        // 编码: UTF-16
+          Buffer.from('eng', 'ascii'),                // 语言: eng
+          Buffer.from([0xFF, 0xFE, 0x00, 0x00]),     // empty description
+          Buffer.from([0xFF, 0xFE]),                  // BOM
+          commentText,
+        ]);
+        const header = Buffer.alloc(10);
+        header.write('COMM', 0, 'ascii');
+        header.writeUInt32BE(data.length, 4);
+        frames.push(Buffer.concat([header, data]));
+      }
+
+      // 合并所有帧
+      const allFrames = Buffer.concat(frames);
+
+      // ID3v2.3 头部（大小为 synchsafe integer）
+      const totalSize = allFrames.length;
+      const sizeBuf = Buffer.alloc(4);
+      sizeBuf[0] = (totalSize >> 21) & 0x7F;
+      sizeBuf[1] = (totalSize >> 14) & 0x7F;
+      sizeBuf[2] = (totalSize >> 7) & 0x7F;
+      sizeBuf[3] = totalSize & 0x7F;
+
+      const id3Header = Buffer.concat([
+        Buffer.from('ID3', 'ascii'),
+        Buffer.from([0x03, 0x00]),  // version 2.3.0
+        Buffer.from([0x00]),        // flags
+        sizeBuf,
+      ]);
+
+      // 读取原文件，跳过已有的 ID3v2 标签
+      const original = fs.readFileSync(filePath);
+      let audioData = original;
+      if (original.length > 10 && original.subarray(0, 3).toString('ascii') === 'ID3') {
+        const oldSize = ((original[6] & 0x7F) << 21) | ((original[7] & 0x7F) << 14) |
+                        ((original[8] & 0x7F) << 7) | (original[9] & 0x7F);
+        audioData = original.subarray(10 + oldSize);
+      }
+
+      fs.writeFileSync(filePath, Buffer.concat([id3Header, allFrames, audioData]));
+      return true;
+    };
+
+    // ---- Vorbis Comments 写入（FLAC）----
+
+    // 构造 VORBIS_COMMENT block 数据
+    const buildVorbisComment = (songInfo, lyrics) => {
+      const comments = [
+        `TITLE=${songInfo.name || '未知歌曲'}`,
+        `ARTIST=${songInfo.author || '未知歌手'}`,
+        `ALBUM=${songInfo.album || '未知专辑'}`,
+        `DATE=${extractYear(songInfo.publish_date)}`,
+        'GENRE=Music',
+        'COMMENT=Downloaded by KGmusic',
+      ];
+
+      const albumArtist = songInfo.album_artist || songInfo.author || '';
+      if (albumArtist) comments.push(`ALBUMARTIST=${albumArtist}`);
+      if (songInfo.publish_date) comments.push(`RELEASEDATE=${songInfo.publish_date}`);
+      if (songInfo.track) comments.push(`TRACKNUMBER=${songInfo.track}`);
+      if (songInfo.disc) comments.push(`DISCNUMBER=${songInfo.disc}`);
+      if (lyrics) comments.push(`LYRICS=${lyrics}`);
+
+      const parts = [];
+      // vendor string
+      const vendor = Buffer.from('KGmusic', 'utf8');
+      const vendorLen = Buffer.alloc(4);
+      vendorLen.writeUInt32LE(vendor.length, 0);
+      parts.push(vendorLen, vendor);
+      // comment count
+      const countBuf = Buffer.alloc(4);
+      countBuf.writeUInt32LE(comments.length, 0);
+      parts.push(countBuf);
+      // each comment
+      for (const c of comments) {
+        const cBuf = Buffer.from(c, 'utf8');
+        const cLen = Buffer.alloc(4);
+        cLen.writeUInt32LE(cBuf.length, 0);
+        parts.push(cLen, cBuf);
+      }
+      return Buffer.concat(parts);
+    };
+
+    // 构造 PICTURE block 数据
+    const buildFlacPicture = (coverBuffer) => {
+      const mime = detectImageMime(coverBuffer);
+      const mimeBuf = Buffer.from(mime, 'ascii');
+      const descBuf = Buffer.from('Cover', 'utf8');
+
+      const parts = [];
+      // picture type (3 = front cover)
+      const picType = Buffer.alloc(4);
+      picType.writeUInt32BE(3, 0);
+      parts.push(picType);
+      // MIME type
+      const mimeLen = Buffer.alloc(4);
+      mimeLen.writeUInt32BE(mimeBuf.length, 0);
+      parts.push(mimeLen, mimeBuf);
+      // description
+      const descLen = Buffer.alloc(4);
+      descLen.writeUInt32BE(descBuf.length, 0);
+      parts.push(descLen, descBuf);
+      // width, height, color depth, indexed colors (all 0)
+      parts.push(Buffer.alloc(16));
+      // picture data
+      const picLen = Buffer.alloc(4);
+      picLen.writeUInt32BE(coverBuffer.length, 0);
+      parts.push(picLen, coverBuffer);
+
+      return Buffer.concat(parts);
+    };
+
+    // 写入 Vorbis Comments 到 FLAC 文件
+    const writeFlacTags = (filePath, songInfo, coverBuffer, lyrics) => {
+      const buffer = fs.readFileSync(filePath);
+
+      // 验证 FLAC 头
+      if (buffer.length < 4 || buffer.subarray(0, 4).toString('ascii') !== 'fLaC') {
+        logDownload(`WARN: 不是FLAC文件，跳过标签写入: ${filePath}`);
+        return false;
+      }
+
+      // 解析现有 metadata blocks
+      let offset = 4;
+      const blocks = [];
+      let audioStart = 4;
+
+      while (offset + 4 <= buffer.length) {
+        const isLast = (buffer[offset] & 0x80) !== 0;
+        const blockType = buffer[offset] & 0x7F;
+        const blockLen = (buffer[offset + 1] << 16) | (buffer[offset + 2] << 8) | buffer[offset + 3];
+
+        blocks.push({
+          type: blockType,
+          isLast,
+          data: buffer.subarray(offset + 4, offset + 4 + blockLen),
+        });
+
+        offset += 4 + blockLen;
+        audioStart = offset;
+
+        if (isLast) break;
+      }
+
+      // 保留 STREAMINFO(0) 和其他非 VORBIS_COMMENT(4)/PICTURE(6) 的块
+      const keptBlocks = blocks.filter(b => b.type !== 4 && b.type !== 6);
+
+      // 构造新的 VORBIS_COMMENT 和 PICTURE 块
+      const newBlocks = [...keptBlocks];
+      newBlocks.push({ type: 4, data: buildVorbisComment(songInfo, lyrics) });
+      if (coverBuffer) {
+        newBlocks.push({ type: 6, data: buildFlacPicture(coverBuffer) });
+      }
+
+      // 重建文件
+      const fileParts = [Buffer.from('fLaC', 'ascii')];
+
+      for (let i = 0; i < newBlocks.length; i++) {
+        const isLast = i === newBlocks.length - 1;
+        const header = Buffer.alloc(4);
+        header[0] = (isLast ? 0x80 : 0x00) | (newBlocks[i].type & 0x7F);
+        header[1] = (newBlocks[i].data.length >> 16) & 0xFF;
+        header[2] = (newBlocks[i].data.length >> 8) & 0xFF;
+        header[3] = newBlocks[i].data.length & 0xFF;
+        fileParts.push(header, newBlocks[i].data);
+      }
+
+      // 追加音频数据
+      fileParts.push(buffer.subarray(audioStart));
+
+      fs.writeFileSync(filePath, Buffer.concat(fileParts));
+      return true;
+    };
+
+    // 检测文件格式并嵌入元数据，返回 { success, logs }
+    const embedMetadataToFile = async (filePath, songInfo, coverBuffer, lyrics, quality) => {
+      const logs = [];
+      if (!songInfo) return { success: false, logs };
+
+      try {
+        // 读取文件头判断格式
+        const fd = fs.openSync(filePath, 'r');
+        const header = Buffer.alloc(4);
+        fs.readSync(fd, header, 0, 4, 0);
+        fs.closeSync(fd);
+
+        const isFlac = header.toString('ascii') === 'fLaC';
+        let success = false;
+        const formatMsg = isFlac ? '检测到 FLAC 文件，写入 Vorbis Comments' : '检测到 MP3 文件，写入 ID3v2 标签';
+        logs.push(formatMsg);
+        console.log(`[FNOS] ${formatMsg}`);
+
+        if (isFlac) {
+          success = writeFlacTags(filePath, songInfo, coverBuffer, lyrics);
+        } else {
+          success = writeId3Tags(filePath, songInfo, coverBuffer, lyrics);
+        }
+
+        if (success) {
+          const stat = fs.statSync(filePath);
+          const okMsg = `元数据嵌入成功: ${songInfo.name} - ${songInfo.author}, 文件大小: ${stat.size}B`;
+          logs.push(okMsg);
+          console.log(`[FNOS] ${okMsg}`);
+          logDownload(`TAG_OK: ${songInfo.name} - ${songInfo.author} 标签写入成功`);
+        } else {
+          logs.push('标签写入返回失败');
+        }
+        return { success, logs };
+      } catch (e) {
+        const errMsg = `元数据嵌入失败: ${e.message}`;
+        logs.push(errMsg);
+        console.error('[FNOS]', errMsg);
+        logDownload(`ERROR: 元数据嵌入失败 ${filePath}: ${e.message}`);
+        return { success: false, logs };
+      }
+    };
+
+    // 核心下载函数：将远程 URL 流式写入共享目录（按 歌手/专辑 分类），并嵌入元数据
+    // metadata 参数: { songInfo, coverBuffer, lyrics, quality, logs } — 传入则下载后嵌入标签
+    // 返回 { relativePath, absPath, size, logs }
+    const downloadUrlToFile = async (url, fileName, artist, album, categorize = false, metadata = null) => {
+      const logs = [...(metadata?.logs || [])];
       await ensureDownloadDirWritable();
 
       const safeFileName = sanitize(fileName);
@@ -197,6 +657,7 @@ async function consturctServer(moduleDefs) {
       await fs.promises.mkdir(dir, { recursive: true });
 
       const filePath = path.join(dir, safeFileName);
+      logs.push(`开始下载音频文件: ${url.substring(0, 80)}...`);
       const response = await axios.get(url, { responseType: 'stream', timeout: 60000, maxRedirects: 5 });
 
       const writer = fs.createWriteStream(filePath);
@@ -216,23 +677,43 @@ async function consturctServer(moduleDefs) {
         response.data.on('error', reject);
       });
 
+      logs.push('音频文件下载完成');
+      if (metadata && metadata.songInfo) {
+        logs.push('开始嵌入元数据（标签/封面/歌词）...');
+        const embedResult = await embedMetadataToFile(filePath, metadata.songInfo, metadata.coverBuffer, metadata.lyrics, metadata.quality);
+        logs.push(...embedResult.logs);
+      } else if (metadata && !metadata.songInfo) {
+        logs.push('未获取到歌曲信息，跳过标签写入');
+      }
+
       const absPath = filePath;
       let fileSize = -1;
       try { fileSize = (await fs.promises.stat(absPath)).size; } catch (__) {}
+      const saveMsg = `文件已保存: ${relativePath}, 大小: ${fileSize}B`;
+      logs.push(saveMsg);
       logDownload(`SUCCESS: 保存到本地绝对路径=${absPath} 相对路径=${relativePath} 大小=${fileSize}B`);
-      console.log('[FNOS] 文件已保存:', absPath, relativePath, `${fileSize}B`);
-      return { relativePath, absPath, size: fileSize };
+      console.log('[FNOS]', saveMsg);
+      return { relativePath, absPath, size: fileSize, logs };
     };
 
-    // 单次下载接口（保留兼容，单曲及其他列表下载使用）
+    // 单次下载接口（单曲下载使用，支持后端嵌入元数据，返回 logs 供前端控制台输出）
     app.post('/fnos/download', async (req, res) => {
       try {
-        const { url, fileName, artist, album, categorize } = req.body || {};
+        const { url, fileName, artist, album, categorize, hash, quality } = req.body || {};
         if (!url || !fileName) {
           return res.status(400).json({ code: 1, msg: '缺少 url 或 fileName 参数' });
         }
-        const result = await downloadUrlToFile(url, fileName, artist, album, categorize);
-        res.json({ code: 0, msg: '下载成功', data: { path: result.relativePath, absPath: result.absPath, size: result.size } });
+
+        // 如果传了 hash，后端自动获取元数据并嵌入标签
+        const authHeader = req.headers['authorization'] || '';
+        const cookiesStr = req.headers['cookie'] || '';
+        let metadata = null;
+        if (hash) {
+          metadata = await fetchMetadataForSong(hash, quality || '320', authHeader, cookiesStr);
+        }
+
+        const result = await downloadUrlToFile(url, fileName, artist, album, categorize, metadata);
+        res.json({ code: 0, msg: '下载成功', data: { path: result.relativePath, absPath: result.absPath, size: result.size, logs: result.logs || [] } });
       } catch (e) {
         console.error('[FNOS] 下载失败:', e.message);
         logDownload(`ERROR: 下载异常: ${e.message}`);
@@ -272,11 +753,18 @@ async function consturctServer(moduleDefs) {
       }
     };
 
-    // 带音质降级的下载（flac → 320 → 128）
+    // 带音质降级的下载（flac → 320 → 128），并嵌入元数据，返回 logs
     const downloadTaskWithFallback = async (task, batch) => {
       let startIdx = QUALITY_FALLBACK_ORDER.indexOf(task.quality);
       if (startIdx === -1) startIdx = 1; // 默认从 320 开始
       let lastErr = null;
+      const allLogs = [];
+
+      // 并行预取元数据（与下载链接获取同时进行，节省时间）
+      const metadataPromise = fetchMetadataForSong(
+        task.song.hash, task.quality, batch.authHeader, batch.cookiesStr
+      );
+
       for (let i = startIdx; i < QUALITY_FALLBACK_ORDER.length; i++) {
         const q = QUALITY_FALLBACK_ORDER[i];
         try {
@@ -288,10 +776,19 @@ async function consturctServer(moduleDefs) {
           const ext = q === 'flac' ? 'flac' : 'mp3';
           const fileName = `${task.song.name} - ${task.song.author}.${ext}`;
           const folderArtist = batch.batchArtist || task.song.author;
-          const result = await downloadUrlToFile(downloadUrl, fileName, folderArtist, task.song.album, true);
-          return { ...result, quality: q };
+
+          // 等待元数据预取完成（通常此时已完成）
+          const metadata = await metadataPromise;
+
+          const result = await downloadUrlToFile(
+            downloadUrl, fileName, folderArtist, task.song.album, true,
+            metadata ? { ...metadata, quality: q } : null
+          );
+          allLogs.push(...(result.logs || []));
+          return { ...result, quality: q, logs: allLogs };
         } catch (e) {
           lastErr = e;
+          allLogs.push(`音质 ${q} 失败: ${e.message}`);
         }
       }
       throw lastErr || new Error('所有音质尝试失败');
@@ -309,15 +806,18 @@ async function consturctServer(moduleDefs) {
       const totalCount = stats.total;
       const quality = batch.quality;
 
-      // 歌曲明细仍从 taskHistory 取（taskHistory 至少保存 MAX_HISTORY=200，
-      // 对于推送来说显示最近的就够了；如果超过200首，只展示最后 200 首的明细，
-      // 顶部总数是准确的）
+      // 歌曲明细仍从 taskHistory 取
       const batchTasks = taskHistory.filter(t => t.batchId === batchId);
       const successList = batchTasks.filter(t => t.status === 'success');
       const failedList = batchTasks.filter(t => t.status === 'failed');
 
-      // 格式化 Markdown 内容
-      let content = `## 总下载歌曲：${totalCount}首，音质${quality}\n\n`;
+      // 确定艺术家名：优先用 batchArtist，否则取第一首歌的作者
+      const displayArtist = batch.batchArtist ||
+        (successList.length > 0 ? (successList[0].song.author || '') :
+          (batchTasks.length > 0 ? (batchTasks[0].song.author || '') : '未知艺术家'));
+
+      // 格式化 Markdown 内容：标题用 h3（与正文相差约2px），专辑名用加粗
+      let content = `### ${displayArtist}批量下载：${totalCount}首，音质${quality}\n\n`;
       content += `**成功下载${successCount}首，失败${failedCount}首**\n\n`;
 
       if (successList.length > 0) {
@@ -331,7 +831,7 @@ async function consturctServer(moduleDefs) {
         content += `---\n\n**成功下载的明细：**\n\n`;
         let albumIndex = 1;
         for (const [albumName, songNames] of Object.entries(groups)) {
-          content += `### ${albumIndex}、${albumName}\n\n`;
+          content += `**${albumIndex}、${albumName}**\n\n`;
           songNames.forEach((name, idx) => { content += `${idx + 1}. ${name}\n`; });
           content += '\n';
           albumIndex++;
@@ -350,7 +850,7 @@ async function consturctServer(moduleDefs) {
       try {
         await axios.post('http://www.pushplus.plus/send', {
           token: batch.pushplusToken,
-          title: `🎵 批量下载完成`,
+          title: `🎵 已经完成${successCount}首歌曲下载`,
           content: content,
           template: 'markdown',
         }, { timeout: 15000 });
@@ -393,6 +893,7 @@ async function consturctServer(moduleDefs) {
             task.status = 'success';
             task.path = result.relativePath;
             task.quality = result.quality;
+            task.logs = result.logs || [];
             batch.stats.downloading--;
             batch.stats.success++;
             globalCounter.totalSuccess++;
@@ -584,7 +1085,7 @@ async function consturctServer(moduleDefs) {
           totalFailed,
           active: active.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality, startedAt: t.startedAt })),
           pending: pending.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality })),
-          recent: recent.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality, status: t.status, error: t.error, path: t.path, finishedAt: t.finishedAt })),
+          recent: recent.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality, status: t.status, error: t.error, path: t.path, finishedAt: t.finishedAt, logs: t.logs || [] })),
           batches: batchesArr,
         },
       });

@@ -572,7 +572,7 @@ const downloadSong = async (song, quality) => {
             
             console.log('[BatchDownload] 下载URL:', downloadUrl, '推测格式:', fileExtHint);
             
-            // 客户端飞牛内嵌 + 服务端飞牛容器：通过后端下载到共享目录
+            // 客户端飞牛内嵌 + 服务端飞牛容器：通过后端下载到共享目录（后端自动嵌入标签）
             const fnosStatus = getFnosStatus();
             if (fnosStatus.enabled) {
                 const songInfo = song.songInfo || {};
@@ -581,10 +581,15 @@ const downloadSong = async (song, quality) => {
                 const songName = song.name || song.originalData?.name || '未知歌曲';
                 const ext = currentQuality === 'flac' ? 'flac' : 'mp3';
                 const fnosFileName = `${songName} - ${artist}.${ext}`;
-                
-                const fnosResult = await downloadToFnos(downloadUrl, fnosFileName, artist, album, true);
+
+                const fnosResult = await downloadToFnos(downloadUrl, fnosFileName, artist, album, true, hash, currentQuality);
                 if (!fnosResult.success) {
                     throw new Error(fnosResult.msg || '飞牛下载失败');
+                }
+                // 输出后端处理日志到前端控制台
+                if (fnosResult.logs && fnosResult.logs.length > 0) {
+                    console.log(`%c[FNOS 批量下载] ${songName} - ${artist}`, 'color: #667eea; font-weight: bold');
+                    fnosResult.logs.forEach(line => console.log(`%c  ${line}`, 'color: #764ba2'));
                 }
                 console.log('[BatchDownload] 飞牛环境已保存:', fnosResult.path);
                 return;

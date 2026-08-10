@@ -705,7 +705,16 @@ const triggerDownload = async (url, quality) => {
   if (fnosStatus.enabled) {
     const artist = getSongArtist()
     const album = props.song.album_name || props.song.album || '未知专辑'
-    const result = await downloadToFnos(url, fileName, artist, album)
+    const hash = getSongHash()
+    const qualityStr = typeof quality === 'object' ? (quality.quality || '320') : (quality || '320')
+    log('飞牛环境下载开始, hash:', hash, '音质:', qualityStr)
+    const result = await downloadToFnos(url, fileName, artist, album, false, hash, qualityStr)
+    // 输出后端处理日志到前端控制台
+    if (result.logs && result.logs.length > 0) {
+      console.log('%c[FNOS 后端日志] ──────────────────', 'color: #667eea; font-weight: bold')
+      result.logs.forEach(line => console.log(`%c[FNOS] ${line}`, 'color: #764ba2'))
+      console.log('%c[FNOS 后端日志] ──────────────────', 'color: #667eea; font-weight: bold')
+    }
     if (result.success) {
       message.success(`已保存到飞牛共享目录: ${result.path}`)
     } else {

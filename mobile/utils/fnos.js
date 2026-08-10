@@ -96,23 +96,25 @@ export function getFnosStatus() {
 
 /**
  * 在飞牛环境下，通过后端下载文件到共享目录
+ * 后端会根据 hash 自动获取元数据并嵌入标签（标题/歌手/专辑/封面/歌词）
+ * 返回的 logs 数组包含后端处理日志，调用方可输出到控制台
  * （注意：调用方应先确认 fnosStatus.enabled 再调用）
  */
-export async function downloadToFnos(url, fileName, artist, album, categorize = false) {
+export async function downloadToFnos(url, fileName, artist, album, categorize = false, hash = '', quality = '') {
   try {
     const res = await post(
       '/fnos/download',
-      { url, fileName, artist, album, categorize },
+      { url, fileName, artist, album, categorize, hash, quality },
       { timeout: 120000 }
     )
     if (res?.code === 0) {
       log('飞牛下载成功:', res.data?.path)
-      return { success: true, path: res.data?.path }
+      return { success: true, path: res.data?.path, logs: res.data?.logs || [] }
     }
-    return { success: false, msg: res?.msg || '下载失败' }
+    return { success: false, msg: res?.msg || '下载失败', logs: [] }
   } catch (e) {
     log('飞牛下载请求失败:', e?.message)
-    return { success: false, msg: e?.message || '下载请求失败' }
+    return { success: false, msg: e?.message || '下载请求失败', logs: [] }
   }
 }
 

@@ -193,6 +193,7 @@ const panelOpen = ref(false);
 let timer = null;
 let consecutiveErrors = 0;
 let idleRounds = 0; // 连续空闲计数（没任务、也没最近完成）
+let printedLogTaskIds = new Set(); // 已输出过日志的 task id，避免重复打印
 
 const pendingCount = computed(() => status.value?.pendingCount || 0);
 const activeCount = computed(() => status.value?.activeCount || 0);
@@ -259,6 +260,25 @@ const fetchStatus = async () => {
     if (data) {
         status.value = data;
         consecutiveErrors = 0;
+
+        // 检查 recent 中新完成的任务，输出后端日志到控制台
+        const recent = data.recent || [];
+        for (const task of recent) {
+            if (task.logs && task.logs.length > 0 && !printedLogTaskIds.has(task.id)) {
+                printedLogTaskIds.add(task.id);
+                const songName = task.song?.name || '未知歌曲';
+                const author = task.song?.author || '未知歌手';
+                const statusText = task.status === 'success' ? '✓ 成功' : '✗ 失败';
+                console.log(`%c[FNOS 批量下载] ${statusText} ${songName} - ${author}`, 'color: #667eea; font-weight: bold');
+                console.log('%c──────────────────────────', 'color: #ddd');
+                task.logs.forEach(line => console.log(`%c  ${line}`, 'color: #764ba2'));
+                console.log('%c──────────────────────────', 'color: #ddd');
+                // 清理 Set 防止无限增长（保留最近 500 个）
+                if (printedLogTaskIds.size > 500) {
+                    printedLogTaskIds = new Set([...printedLogTaskIds].slice(-500));
+                }
+            }
+        }
 
         // 根据当前状态动态调整轮询频率
         const curHasTasks = (pendingCount.value + activeCount.value) > 0;
