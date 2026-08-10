@@ -576,19 +576,21 @@ const downloadSong = async (song, quality) => {
             const fnosStatus = getFnosStatus();
             if (fnosStatus.enabled) {
                 const songInfo = song.songInfo || {};
-                const artist = songInfo.author || song.author || song.singer_name || '未知歌手';
+                const songArtist = songInfo.author || song.author || song.singer_name || '未知歌手';
                 const album = songInfo.album || song.album || song.album_name || '未知专辑';
                 const songName = song.name || song.originalData?.name || '未知歌曲';
                 const ext = currentQuality === 'flac' ? 'flac' : 'mp3';
-                const fnosFileName = `${songName} - ${artist}.${ext}`;
+                const fnosFileName = `${songName} - ${songArtist}.${ext}`;
+                // 一级文件夹歌手名：优先用 batchArtist（通过歌手ID查询的名字），确保同批下载统一
+                const folderArtist = props.batchArtist || songArtist;
 
-                const fnosResult = await downloadToFnos(downloadUrl, fnosFileName, artist, album, true, hash, currentQuality);
+                const fnosResult = await downloadToFnos(downloadUrl, fnosFileName, folderArtist, album, true, hash, currentQuality);
                 if (!fnosResult.success) {
                     throw new Error(fnosResult.msg || '飞牛下载失败');
                 }
                 // 输出后端处理日志到前端控制台
                 if (fnosResult.logs && fnosResult.logs.length > 0) {
-                    console.log(`%c[FNOS 批量下载] ${songName} - ${artist}`, 'color: #667eea; font-weight: bold');
+                    console.log(`%c[FNOS 批量下载] ${songName} - ${songArtist}`, 'color: #667eea; font-weight: bold');
                     fnosResult.logs.forEach(line => console.log(`%c  ${line}`, 'color: #764ba2'));
                 }
                 console.log('[BatchDownload] 飞牛环境已保存:', fnosResult.path);
@@ -608,8 +610,10 @@ const downloadSong = async (song, quality) => {
             }
             
             const songInfo = result.songInfo || {};
-            const artist = sanitizeFileName(songInfo.author || song.author || song.singer_name || '未知歌手');
+            const songArtist = sanitizeFileName(songInfo.author || song.author || song.singer_name || '未知歌手');
             const album = sanitizeFileName(songInfo.album || song.album || song.album_name || '未知专辑');
+            // 一级文件夹歌手名：优先用 batchArtist（通过歌手ID查询的名字），确保同批下载统一
+            const artist = sanitizeFileName(props.batchArtist) || songArtist;
             const safeFileName = sanitizeFileName(result.fileName);
             
             // 主流程：File System Access API — 在用户选择的目录下创建 歌手/专辑 子文件夹

@@ -775,10 +775,12 @@ async function consturctServer(moduleDefs) {
           const downloadUrl = urlResp.url[0];
           const ext = q === 'flac' ? 'flac' : 'mp3';
           const fileName = `${task.song.name} - ${task.song.author}.${ext}`;
-          const folderArtist = batch.batchArtist || task.song.author;
 
           // 等待元数据预取完成（通常此时已完成）
           const metadata = await metadataPromise;
+
+          // 一级文件夹歌手名：优先用 batchArtist（通过歌手ID查询的名字），确保同批下载统一
+          const folderArtist = batch.batchArtist || task.song.author;
 
           const result = await downloadUrlToFile(
             downloadUrl, fileName, folderArtist, task.song.album, true,

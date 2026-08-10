@@ -327,6 +327,7 @@
         ref="batchDownloadManager"
         :songs="selectedSongs"
         :show-trigger-button="false"
+        :batch-artist="isArtist ? (detail.author_name || '') : ''"
         @download-start="handleBatchDownloadStart"
         @download-complete="handleBatchDownloadComplete"
         @download-progress="handleBatchDownloadProgress"

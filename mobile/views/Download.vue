@@ -397,10 +397,89 @@ const dateFrom = ref(localStorage.getItem('download_date_from') || '');
 const dateTo = ref(localStorage.getItem('download_date_to') || '');
 const querying = ref(false);
 
-// 歌手ID失焦查询
+// 歌手名查询（带 localStorage 缓存，key: artist_id -> name）
+const ARTIST_CACHE_KEY = 'download_artist_cache';
+const loadArtistCache = () => {
+    try { return JSON.parse(localStorage.getItem(ARTIST_CACHE_KEY) || '{}'); } catch (_) { return {}; }
+};
+const saveArtistCache = (id, name) => {
+    try {
+        const cache = loadArtistCache();
+        cache[String(id)] = String(name);
+        localStorage.setItem(ARTIST_CACHE_KEY, JSON.stringify(cache));
+    } catch (_) {}
+};
+const getCachedArtist = (id) => loadArtistCache()[String(id)] || '';
+
 const artistName = ref('');
 const artistLookupStatus = ref('idle'); // idle | loading | success | error
 const artistLookupMsg = ref('');
+// 正在请求中的 id，避免重复请求
+const _lookupPendingId = ref('');
+
+// 统一的歌手名查询函数：先查缓存 → 命中立即显示 → 未命中再请求 API
+// 可被失焦、页面加载、路由变化、ID变化多处调用
+const lookupArtistName = async (id) => {
+    const trimmedId = String(id || '').trim();
+    if (!trimmedId) {
+        artistName.value = '';
+        artistLookupStatus.value = 'idle';
+        artistLookupMsg.value = '';
+        return;
+    }
+
+    // 先查缓存，命中则立即显示
+    const cachedName = getCachedArtist(trimmedId);
+    if (cachedName) {
+        artistName.value = cachedName;
+        artistLookupStatus.value = 'success';
+        artistLookupMsg.value = '';
+    }
+
+    // 同一个 id 正在请求中，跳过
+    if (_lookupPendingId.value === trimmedId) return;
+
+    artistLookupStatus.value = 'loading';
+    artistLookupMsg.value = '';
+    _lookupPendingId.value = trimmedId;
+
+    try {
+        const response = await get('/artist/detail', { id: trimmedId });
+        let name = '';
+        if (response && response.status === 1 && response.data) {
+            const d = response.data;
+            name = d.author_name || d.authorname || d.name || d.artist_name || d.singer_name || '';
+            if (!name && d.info && typeof d.info === 'object') {
+                name = d.info.author_name || d.info.authorname || d.info.name || d.info.artist_name || '';
+            }
+            name = String(name || '').trim();
+        }
+
+        if (name) {
+            artistName.value = name;
+            artistLookupStatus.value = 'success';
+            artistLookupMsg.value = '';
+            saveArtistCache(trimmedId, name);
+        } else if (!cachedName) {
+            // 缓存没命中且接口没查到
+            artistLookupStatus.value = 'error';
+            artistLookupMsg.value = '找不到歌手，请检查歌手ID';
+            artistName.value = '';
+        }
+        // 如果缓存命中但接口没查到，保持缓存结果不报错
+    } catch (err) {
+        console.warn('查询歌手详情失败:', err);
+        if (!cachedName) {
+            artistLookupStatus.value = 'error';
+            artistLookupMsg.value = '找不到歌手，请检查歌手ID';
+            artistName.value = '';
+        }
+    } finally {
+        _lookupPendingId.value = '';
+    }
+};
+
+// 歌手ID失焦：触发一次查询（保留原有交互）
 
 // ===== 快捷日期范围（已移除快捷按钮，保留变量） =====
 
@@ -588,53 +667,8 @@ const filterAlbumsByConditions = (rawAlbums) => {
     });
 };
 
-// 歌手ID失焦自动查询歌手名
-const handleBlurArtistId = async () => {
-    const id = String(artistId.value || '').trim();
-    if (!id) {
-        artistName.value = '';
-        artistLookupStatus.value = 'idle';
-        artistLookupMsg.value = '';
-        return;
-    }
-
-    artistLookupStatus.value = 'loading';
-    artistLookupMsg.value = '';
-    artistName.value = '';
-
-    try {
-        const response = await get('/artist/detail', { id });
-        let found = false;
-        let name = '';
-
-        if (response && response.status === 1 && response.data) {
-            const d = response.data;
-            name = d.author_name || d.authorname || d.name || d.artist_name || d.singer_name || '';
-            // 也可能嵌套在 data.info 下
-            if (!name && d.info && typeof d.info === 'object') {
-                name = d.info.author_name || d.info.authorname || d.info.name || d.info.artist_name || '';
-            }
-            if (name && String(name).trim()) {
-                found = true;
-            }
-        }
-
-        if (found) {
-            artistName.value = String(name).trim();
-            artistLookupStatus.value = 'success';
-            artistLookupMsg.value = '';
-        } else {
-            artistLookupStatus.value = 'error';
-            artistLookupMsg.value = '找不到歌手，请检查歌手ID';
-            artistName.value = '';
-        }
-    } catch (err) {
-        console.warn('查询歌手详情失败:', err);
-        artistLookupStatus.value = 'error';
-        artistLookupMsg.value = '找不到歌手，请检查歌手ID';
-        artistName.value = '';
-    }
-};
+// 歌手ID失焦：触发一次查询（保留原有交互）
+const handleBlurArtistId = () => lookupArtistName(artistId.value);
 
 // 获取歌手所有专辑
 const fetchArtistAlbums = async (id) => {
@@ -888,16 +922,20 @@ const queryArtist = async () => {
     }
 };
 
-// 监听路由参数变化，自动填入歌手ID（不自动查询，由用户手动点击）
+// 监听路由参数变化，自动填入歌手ID并查询歌手名
 watch(() => route.query.artistId, (newArtistId) => {
     if (newArtistId) {
         artistId.value = String(newArtistId);
+        lookupArtistName(newArtistId);
     }
 }, { immediate: true });
 
-// 页面加载时，加载已缓存的下载路径名称
+// 页面加载时：加载缓存的下载路径名；如果输入框里已有ID（从localStorage恢复的），立即查询歌手名
 onMounted(() => {
     loadDownloadPathName();
+    if (artistId.value) {
+        lookupArtistName(artistId.value);
+    }
 });
 
 // 后台加载所有专辑的歌曲
