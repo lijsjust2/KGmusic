@@ -323,7 +323,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, nextTick } from 'vue';
+import { ref, computed, watch, onMounted, nextTick, onActivated } from 'vue';
 import { get } from '../utils/request';
 import { useRoute } from 'vue-router';
 import BatchDownloadManager from '../components/BatchDownloadManager.vue';
@@ -908,7 +908,6 @@ const queryArtist = async () => {
 
 // 监听歌手ID变化（用户手动输入框修改时触发）
 watch(artistId, (newVal, oldVal) => {
-    // 注意：路由填充和 onMounted 会直接调用 lookup，这里只处理用户手动输入的变化
     const id = String(newVal || '').trim();
     const oldId = String(oldVal || '').trim();
     if (id && id !== oldId) {
@@ -924,15 +923,24 @@ watch(() => route.query.artistId, (newArtistId) => {
     }
 }, { immediate: true });
 
-// 页面加载完成兜底：如果输入框里有ID但还没查到歌手名，再查一次
-onMounted(() => {
-    loadDownloadPathName();
+// 页面首次加载 + keep-alive 每次激活：只要输入框有ID，就查一次歌手名
+// 注意：这里强制查询，不做「同ID跳过」去重，确保每次进来显示的都是最新结果
+const ensureArtistNameFetched = () => {
     nextTick(() => {
         const id = String(artistId.value || '').trim();
-        if (id && !artistName.value && artistLookupStatus.value !== 'loading') {
-            lookupArtistName(id);
-        }
+        if (!id) return;
+        // 重置去重标记 + 重置上一次ID标记 → 强制触发完整查询流程
+        _lookupPendingId.value = '';
+        _lastLookupId = '';
+        lookupArtistName(id);
     });
+};
+onMounted(() => {
+    loadDownloadPathName();
+    ensureArtistNameFetched();
+});
+onActivated(() => {
+    ensureArtistNameFetched();
 });
 
 // 后台加载所有专辑的歌曲
