@@ -323,7 +323,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, nextTick } from 'vue';
 import { get } from '../utils/request';
 import { useRoute } from 'vue-router';
 import BatchDownloadManager from '../components/BatchDownloadManager.vue';
@@ -906,22 +906,33 @@ const queryArtist = async () => {
     }
 };
 
-// 监听歌手ID变化：无论来自路由参数、手动输入、还是页面缓存，变化后立即查询歌手名
-watch(artistId, (newVal) => {
+// 监听歌手ID变化（用户手动输入框修改时触发）
+watch(artistId, (newVal, oldVal) => {
+    // 注意：路由填充和 onMounted 会直接调用 lookup，这里只处理用户手动输入的变化
     const id = String(newVal || '').trim();
-    if (id) lookupArtistName(id);
+    const oldId = String(oldVal || '').trim();
+    if (id && id !== oldId) {
+        lookupArtistName(id);
+    }
 }, { immediate: false });
 
-// 监听路由参数变化，自动填入歌手ID（填入后上面的 watch 会自动触发查询）
+// 监听路由参数变化：立即填入ID + 直接查询歌手名
 watch(() => route.query.artistId, (newArtistId) => {
     if (newArtistId) {
         artistId.value = String(newArtistId);
+        lookupArtistName(newArtistId);
     }
 }, { immediate: true });
 
-// 页面加载时：加载缓存的下载路径名
+// 页面加载完成兜底：如果输入框里有ID但还没查到歌手名，再查一次
 onMounted(() => {
     loadDownloadPathName();
+    nextTick(() => {
+        const id = String(artistId.value || '').trim();
+        if (id && !artistName.value && artistLookupStatus.value !== 'loading') {
+            lookupArtistName(id);
+        }
+    });
 });
 
 // 后台加载所有专辑的歌曲
