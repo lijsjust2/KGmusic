@@ -249,7 +249,9 @@ const phoneLogin = async (userid) => {
         await MoeAuth.setData({ UserInfo: userInfo })
         message.success('登录成功')
 
-        await MoeAuth.autoClaimVip()
+        // 重新注册设备获取新dfid + 强制从服务器获取最新VIP信息
+        await MoeAuth.initDevice(true)
+        await MoeAuth.fetchVipInfo()
 
         const redirect = route.query.redirect || '/profile'
         router.push(redirect)
@@ -326,7 +328,9 @@ const startQRCheck = () => {
           await MoeAuth.setData({ UserInfo: userInfo })
           message.success('登录成功')
 
-          await MoeAuth.autoClaimVip()
+          // 重新注册设备获取新dfid + 强制从服务器获取最新VIP信息
+          await MoeAuth.initDevice(true)
+          await MoeAuth.fetchVipInfo()
 
           const redirect = route.query.redirect || '/profile'
           router.push(redirect)

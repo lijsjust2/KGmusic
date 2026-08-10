@@ -48,6 +48,7 @@ export const MoeAuthStore = defineStore('MoeData', {
             this.UserInfo = null;
             this.Config = null;
             this.vipInfo = null;
+            this.Device = null;
             localStorage.removeItem('cachedVipInfo');
             localStorage.removeItem('cachedVipUserId');
             localStorage.removeItem('lastVipClaimDate');
