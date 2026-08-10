@@ -91,6 +91,10 @@
                         <input type="checkbox" v-model="excludeNoCompany" />
                         <span>排除无唱片公司（publish_company 为空的专辑）</span>
                     </div>
+                    <div class="simple-check">
+                        <input type="checkbox" v-model="excludeDuplicate" />
+                        <span>排除重复歌曲（按照歌曲名排重，同一首歌只下载一次，优先保留最新发布专辑中的版本）</span>
+                    </div>
                 </div>
             </div>
 
@@ -239,7 +243,12 @@
             <template v-else>
                 <div class="download-summary">
                     <i class="fas fa-music"></i>
-                    <span>已选 <strong>{{ selectedAlbums.size }}</strong> 个专辑，共 <strong>{{ selectedSongList.length }}</strong> 首歌曲</span>
+                    <span>
+                        已选 <strong>{{ selectedAlbums.size }}</strong> 个专辑，共 <strong>{{ selectedSongList.length }}</strong> 首歌曲
+                        <span v-if="excludeDuplicate && duplicateSkippedCount > 0" class="duplicate-hint">
+                            （已跳过 <strong>{{ duplicateSkippedCount }}</strong> 首重复歌曲）
+                        </span>
+                    </span>
                 </div>
                 
                 <div class="config-grid">
@@ -393,6 +402,7 @@ const artistId = ref('');
 const excludeConcert = ref(localStorage.getItem('download_exclude_concert') !== 'false');
 const excludeLive = ref(localStorage.getItem('download_exclude_live') !== 'false');
 const excludeNoCompany = ref(localStorage.getItem('download_exclude_no_company') !== 'false');
+const excludeDuplicate = ref(localStorage.getItem('download_exclude_duplicate') !== 'false');
 const dateFrom = ref(localStorage.getItem('download_date_from') || '');
 const dateTo = ref(localStorage.getItem('download_date_to') || '');
 const querying = ref(false);
@@ -433,6 +443,7 @@ watch(pushplusToken, (newValue) => {
 watch(excludeConcert, (v) => localStorage.setItem('download_exclude_concert', String(v)));
 watch(excludeLive, (v) => localStorage.setItem('download_exclude_live', String(v)));
 watch(excludeNoCompany, (v) => localStorage.setItem('download_exclude_no_company', String(v)));
+watch(excludeDuplicate, (v) => localStorage.setItem('download_exclude_duplicate', String(v)));
 watch(dateFrom, (v) => localStorage.setItem('download_date_from', v || ''));
 watch(dateTo, (v) => localStorage.setItem('download_date_to', v || ''));
 
@@ -450,16 +461,75 @@ watch([downloadDelayMin, downloadDelayMax], ([newMin, newMax]) => {
     localStorage.setItem('download_delay_max', validMax.toString());
 });
 
-// 计算选中的歌曲列表（从选中专辑收集歌曲，并应用过滤）
+// 跳过的重复歌曲数量（用于日志和提示）
+const duplicateSkippedCount = ref(0);
+const duplicateSkippedDetails = ref([]);
+
+// 解析专辑日期（用于排序）
+const _parseDateForSort = (dateStr) => {
+    if (!dateStr) return 0;
+    const match = String(dateStr).match(/(\d{4})[-./]?(\d{1,2})?[-./]?(\d{1,2})?/);
+    if (!match) return 0;
+    const year = parseInt(match[1]) || 0;
+    const month = match[2] ? parseInt(match[2]) - 1 : 0;
+    const day = match[3] ? parseInt(match[3]) : 1;
+    return new Date(year, month, day).getTime() || 0;
+};
+
+// 歌曲名归一化（去空格、全小写，用于去重比较）
+const _normalizeSongName = (name) => {
+    return String(name || '').trim().toLowerCase();
+};
+
+// 计算选中的歌曲列表（从选中专辑收集歌曲，并应用过滤 + 按歌曲名去重）
 const selectedSongList = computed(() => {
     const songs = [];
     const map = albumSongMap.value;
-    for (const albumId of selectedAlbums.value) {
-        // 转换为字符串以确保类型匹配（API可能返回数字类型album_id）
+    duplicateSkippedCount.value = 0;
+    duplicateSkippedDetails.value = [];
+
+    // 获取选中的专辑ID列表
+    const selectedIds = Array.from(selectedAlbums.value);
+
+    // 如果开启排除重复，先按专辑发布时间从新到旧排序（优先保留最新发布专辑中的版本）
+    let orderedIds = selectedIds;
+    if (excludeDuplicate.value && selectedIds.length > 1) {
+        orderedIds = [...selectedIds].sort((a, b) => {
+            const albumA = albums.value.find(al => String(al.album_id) === String(a));
+            const albumB = albums.value.find(al => String(al.album_id) === String(b));
+            const dateA = _parseDateForSort(albumA?.publish_date || albumA?.publish_time);
+            const dateB = _parseDateForSort(albumB?.publish_date || albumB?.publish_time);
+            return dateB - dateA; // 从新到旧
+        });
+    }
+
+    const seenSongNames = new Set();
+
+    for (const albumId of orderedIds) {
         const key = String(albumId);
         const albumSongs = map.get(key);
-        if (albumSongs) {
-            const filtered = albumSongs.filter(song => !shouldExclude(song.name, song.albumName));
+        if (!albumSongs) continue;
+
+        const filtered = albumSongs.filter(song => !shouldExclude(song.name, song.albumName));
+
+        if (excludeDuplicate.value) {
+            for (const song of filtered) {
+                const songNameKey = _normalizeSongName(song.name);
+                if (songNameKey && seenSongNames.has(songNameKey)) {
+                    // 已存在相同歌曲名的歌曲，跳过
+                    duplicateSkippedCount.value++;
+                    duplicateSkippedDetails.value.push({
+                        name: song.name,
+                        album: song.albumName,
+                    });
+                    continue;
+                }
+                if (songNameKey) {
+                    seenSongNames.add(songNameKey);
+                }
+                songs.push(song);
+            }
+        } else {
             songs.push(...filtered);
         }
     }
@@ -1064,6 +1134,20 @@ const handleSongDownloadFail = (song, index, error) => {
 // 下载开始
 const handleDownloadStart = () => {
     addLog('开始批量下载...', 'info', 'fas fa-download');
+    // 如果有跳过重复歌曲，输出日志（最多显示前5首）
+    if (excludeDuplicate.value && duplicateSkippedCount.value > 0) {
+        addLog(`🔁 去重规则生效，已跳过 ${duplicateSkippedCount.value} 首重复歌曲（保留最新发布专辑中的版本）`, 'info', 'fas fa-clone');
+        if (duplicateSkippedDetails.value.length > 0) {
+            const showCount = Math.min(5, duplicateSkippedDetails.value.length);
+            for (let i = 0; i < showCount; i++) {
+                const item = duplicateSkippedDetails.value[i];
+                addLog(`   · 跳过：《${item.name}》(${item.album})`, 'info', 'fas fa-arrow-right');
+            }
+            if (duplicateSkippedDetails.value.length > showCount) {
+                addLog(`   · ... 等 ${duplicateSkippedDetails.value.length - showCount} 首`, 'info', 'fas fa-ellipsis-h');
+            }
+        }
+    }
 };
 
 // 下载完成
@@ -1072,14 +1156,16 @@ const handleDownloadComplete = async (result) => {
 
     // 飞牛环境：已加入后台下载队列，任务在服务端持续执行，关闭页面不影响
     if (queued) {
-        addLog(`已加入后台下载队列，共 ${addedCount || totalCount} 首歌曲，关闭页面后任务仍会继续。点击右下角悬浮窗查看进度`, 'success', 'fas fa-list-check');
+        const dupMsg = (excludeDuplicate.value && duplicateSkippedCount.value > 0) ? `，已跳过重复 ${duplicateSkippedCount.value} 首` : '';
+        addLog(`已加入后台下载队列，共 ${addedCount || totalCount} 首歌曲${dupMsg}，关闭页面后任务仍会继续。点击右下角悬浮窗查看进度`, 'success', 'fas fa-list-check');
         return;
     }
 
     if (cancelled) {
         addLog(`⛔ 下载已取消，已下载 ${successCount} 首，失败 ${failedCount} 首`, 'warning', 'fas fa-exclamation-triangle');
     } else {
-        addLog(`下载完成！共 ${totalCount} 首歌曲，成功 ${successCount} 首，失败 ${failedCount} 首，音质: ${quality?.desc || quality?.name || quality}`, 'success', 'fas fa-check-circle');
+        const dupMsg = (excludeDuplicate.value && duplicateSkippedCount.value > 0) ? `，去重跳过 ${duplicateSkippedCount.value} 首` : '';
+        addLog(`下载完成！共 ${totalCount} 首歌曲，成功 ${successCount} 首，失败 ${failedCount} 首${dupMsg}，音质: ${quality?.desc || quality?.name || quality}`, 'success', 'fas fa-check-circle');
     }
 
     // 如果有 PushPlus Token，发送推送
@@ -1844,6 +1930,18 @@ const handleDownloadComplete = async (result) => {
 }
 
 .download-summary strong {
+    font-weight: 700;
+}
+
+.duplicate-hint {
+    font-size: 12px;
+    opacity: 0.85;
+    margin-left: 4px;
+    color: #fbbf24;
+}
+
+.duplicate-hint strong {
+    color: #fbbf24;
     font-weight: 700;
 }
 

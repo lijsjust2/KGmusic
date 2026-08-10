@@ -1109,8 +1109,25 @@ async function consturctServer(moduleDefs) {
         }));
 
         const totalSongs = allTasks.length;
-        const tasks = allTasks.filter(t => t.song.hash); // 必须有 hash
-        const skipped = totalSongs - tasks.length;
+        // Step 1: 必须有 hash
+        const hasHashTasks = allTasks.filter(t => t.song.hash);
+        let skippedNoHash = totalSongs - hasHashTasks.length;
+
+        // Step 2: 后端双保险去重（按歌曲名，保留首次出现的版本。前端传过来时已按"专辑从新到旧"排序，因此首次出现即为最新版本）
+        const normalizeName = (n) => String(n || '').trim().toLowerCase();
+        const seenSongNames = new Set();
+        let skippedDuplicate = 0;
+        const tasks = [];
+        for (const t of hasHashTasks) {
+          const nameKey = normalizeName(t.song.name);
+          if (nameKey && seenSongNames.has(nameKey)) {
+            skippedDuplicate++;
+            continue;
+          }
+          if (nameKey) seenSongNames.add(nameKey);
+          tasks.push(t);
+        }
+        const skipped = skippedNoHash + skippedDuplicate;
 
         if (tasks.length === 0) {
           batches.delete(batchId);
@@ -1136,11 +1153,16 @@ async function consturctServer(moduleDefs) {
           processQueue().catch(e => console.error('[FNOS Queue] 启动 worker 失败:', e.message));
         }
 
-        console.log(`[FNOS Queue] 批次 ${batchId} 加入 ${tasks.length} 首（跳过 ${skipped} 首无 hash），音质 ${qualityVal}`);
+        const skipDetails = [];
+        if (skippedNoHash > 0) skipDetails.push(`${skippedNoHash}首无下载信息`);
+        if (skippedDuplicate > 0) skipDetails.push(`${skippedDuplicate}首重复歌曲`);
+        const skipDetailStr = skipDetails.length > 0 ? `（跳过：${skipDetails.join('、')}）` : '';
+
+        console.log(`[FNOS Queue] 批次 ${batchId} 加入 ${tasks.length} 首${skipDetailStr}，音质 ${qualityVal}`);
         const successMsg = skipped > 0
-          ? `已加入 ${tasks.length} 首，跳过 ${skipped} 首（缺少下载信息）`
+          ? `已加入 ${tasks.length} 首，跳过 ${skipped} 首${skipDetailStr}`
           : '已加入下载队列';
-        res.json({ code: 0, msg: successMsg, data: { batchId, added: tasks.length, skipped, total: tasks.length } });
+        res.json({ code: 0, msg: successMsg, data: { batchId, added: tasks.length, skipped, skippedNoHash, skippedDuplicate, total: tasks.length } });
       } catch (e) {
         console.error('[FNOS Queue] 加入队列失败:', e.message);
         res.status(500).json({ code: 1, msg: '加入队列失败: ' + e.message });
