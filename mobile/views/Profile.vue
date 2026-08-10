@@ -17,6 +17,20 @@
               <span class="vip-status">{{ vipStatusText }}</span>
               <i class="fas fa-chevron-right"></i>
             </div>
+            <div class="sign-in-actions">
+              <button class="sign-btn hour-btn" :disabled="claiming" @click="handleClaimHourVip">
+                <i class="fas fa-gift"></i>
+                <span>{{ claiming ? '领取中...' : '领取3小时VIP' }}</span>
+              </button>
+              <button class="sign-btn day-btn" :disabled="claimingDay" @click="handleClaimDayVip">
+                <i class="fas fa-calendar-day"></i>
+                <span>{{ claimingDay ? '领取中...' : '领取1天VIP' }}</span>
+              </button>
+              <button v-if="isVip" class="sign-btn upgrade-btn" :disabled="upgrading" @click="handleUpgradeVip">
+                <i class="fas fa-arrow-up"></i>
+                <span>{{ upgrading ? '升级中...' : '升级概念版VIP' }}</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -91,6 +105,9 @@ const { t } = useI18n()
 
 // VIP相关状态
 const showVipModal = ref(false)
+const claiming = ref(false)
+const claimingDay = ref(false)
+const upgrading = ref(false)
 
 // Library相关状态
 const userDetail = ref({})
@@ -281,6 +298,76 @@ const handleLogout = () => {
   router.push('/login')
 }
 
+const handleClaimHourVip = async () => {
+  try {
+    claiming.value = true
+    const res = await MoeAuth.claimHourVip()
+    if (res.status === 1) {
+      message.success(`签到成功，获得${res.data.award_vip_hour}小时VIP`)
+      getVipInfo()
+    } else {
+      message.error(res.data || '领取失败')
+    }
+  } catch (error) {
+    const errBody = error.response?.data
+    const errCode = errBody?.error_code || errBody?.errcode
+    if (errCode === 131001 || errCode === 297002) {
+      message.success(errBody?.error_msg || '今天已经签到过了')
+    } else {
+      message.error(errBody?.data || errBody?.msg || '领取失败，请稍后重试')
+    }
+  } finally {
+    claiming.value = false
+  }
+}
+
+const handleClaimDayVip = async () => {
+  try {
+    claimingDay.value = true
+    const todayKey = new Date().toISOString().split('T')[0]
+    const res = await MoeAuth.claimDayVip(todayKey)
+    if (res.status === 1) {
+      message.success('领取成功！获得1天VIP')
+      getVipInfo()
+    } else {
+      message.error(res.data || '领取失败')
+    }
+  } catch (error) {
+    const errBody = error.response?.data
+    const errCode = errBody?.error_code
+    if (errCode === 131001 || errCode === 297002) {
+      message.success(errBody?.error_msg || '今天已经签到过了')
+    } else {
+      message.error(errBody?.data || errBody?.msg || '领取失败，请稍后重试')
+    }
+  } finally {
+    claimingDay.value = false
+  }
+}
+
+const handleUpgradeVip = async () => {
+  try {
+    upgrading.value = true
+    const res = await MoeAuth.upgradeDayVip()
+    if (res.status === 1) {
+      message.success('升级成功！获得1天概念版VIP')
+      getVipInfo()
+    } else {
+      message.error(res.data || '升级失败')
+    }
+  } catch (error) {
+    const errBody = error.response?.data
+    const errCode = errBody?.error_code
+    if (errCode === 131001 || errCode === 297002) {
+      message.success(errBody?.error_msg || '今天已经签到过了')
+    } else {
+      message.error(errBody?.data || errBody?.msg || '升级失败，请稍后重试')
+    }
+  } finally {
+    upgrading.value = false
+  }
+}
+
 const props = defineProps({
   playerControl: Object
 })
@@ -444,6 +531,64 @@ onMounted(() => {
 
 .vip-info.vip-active .vip-status {
   color: #ffaa00;
+}
+
+.sign-in-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.sign-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.3s;
+  color: white;
+}
+
+.sign-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.sign-btn i {
+  font-size: 14px;
+}
+
+.sign-btn.hour-btn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.sign-btn.hour-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+}
+
+.sign-btn.day-btn {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+}
+
+.sign-btn.day-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(245, 87, 108, 0.3);
+}
+
+.sign-btn.upgrade-btn {
+  background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+}
+
+.sign-btn.upgrade-btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 242, 254, 0.3);
 }
 
 .section-title {

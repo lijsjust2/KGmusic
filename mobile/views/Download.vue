@@ -455,7 +455,9 @@ const selectedSongList = computed(() => {
     const songs = [];
     const map = albumSongMap.value;
     for (const albumId of selectedAlbums.value) {
-        const albumSongs = map.get(albumId);
+        // 转换为字符串以确保类型匹配（API可能返回数字类型album_id）
+        const key = String(albumId);
+        const albumSongs = map.get(key);
         if (albumSongs) {
             const filtered = albumSongs.filter(song => !shouldExclude(song.name, song.albumName));
             songs.push(...filtered);
@@ -479,13 +481,15 @@ const totalPages = computed(() => {
 // 是否所有专辑都已选中
 const isAllAlbumsSelected = computed(() => {
     if (albums.value.length === 0) return false;
-    return albums.value.every(album => selectedAlbums.value.has(album.album_id));
+    return albums.value.every(album => selectedAlbums.value.has(String(album.album_id)));
 });
 
 // 选中专辑的歌曲是否都已加载完成
 const isDownloadReady = computed(() => {
     for (const albumId of selectedAlbums.value) {
-        if (!albumSongMap.value.has(albumId)) return false;
+        // 转换为字符串以确保类型匹配
+        const key = String(albumId);
+        if (!albumSongMap.value.has(key)) return false;
     }
     return selectedAlbums.value.size > 0;
 });
@@ -867,8 +871,10 @@ const queryArtist = async () => {
         });
         
         // 初始化专辑数据（设置 songCount 为 undefined，等后台加载后更新）
+        // 统一将 album_id 转换为字符串类型，确保后续 Map/Set 查找时类型一致
         albums.value = filteredAlbums.map(a => ({
             ...a,
+            album_id: String(a.album_id),
             songCount: undefined
         }));
         
@@ -904,9 +910,10 @@ onMounted(() => {
 const loadAlbumSongsInBackground = async (rawAlbums) => {
     let loadedCount = 0;
     const total = rawAlbums.length;
+    const albumsToRemove = []; // 需要从列表中移除的专辑（全部歌曲被过滤）
     
     const updateAlbumSongCount = (albumId, count) => {
-        const idx = albums.value.findIndex(a => a.album_id === albumId);
+        const idx = albums.value.findIndex(a => String(a.album_id) === String(albumId));
         if (idx !== -1) {
             const updated = [...albums.value];
             updated[idx] = { ...updated[idx], songCount: count };
@@ -914,37 +921,76 @@ const loadAlbumSongsInBackground = async (rawAlbums) => {
         }
     };
     
+    // 从选中集合中移除专辑
+    const removeFromSelected = (albumId) => {
+        const key = String(albumId);
+        if (selectedAlbums.value.has(key)) {
+            const set = new Set(selectedAlbums.value);
+            set.delete(key);
+            selectedAlbums.value = set;
+        }
+    };
+    
     await parallelLimit(
         rawAlbums.map((album) => async () => {
             const albumSongs = await fetchAlbumSongs(album.album_id, album.album_name, album.publish_date || album.publish_time || '');
             
-            // 存储歌曲
+            // 应用过滤规则（排除Live、演唱会等）
+            const filteredSongs = albumSongs.filter(song => !shouldExclude(song.name, song.albumName));
+            const removedCount = albumSongs.length - filteredSongs.length;
+            
+            const albumKey = String(album.album_id);
+            
+            if (filteredSongs.length === 0) {
+                // 过滤后没有有效歌曲：记录该专辑待移除
+                albumsToRemove.push(albumKey);
+                removeFromSelected(albumKey);
+                loadedCount++;
+                queryStatus.value = `歌曲信息加载中 (${loadedCount}/${total})`;
+                const reason = removedCount > 0 ? `（${removedCount}首被过滤规则排除）` : '（无有效歌曲）';
+                addLog(`  ✗ ${album.album_name}: 已隐藏 ${reason}`, 'warning', 'fas fa-filter');
+                return;
+            }
+            
+            // 存储过滤后的歌曲
             const map = new Map(albumSongMap.value);
-            map.set(album.album_id, albumSongs);
+            map.set(albumKey, filteredSongs);
             albumSongMap.value = map;
             
-            // 更新显示
-            updateAlbumSongCount(album.album_id, albumSongs.length);
+            // 更新显示为过滤后的歌曲数量
+            updateAlbumSongCount(album.album_id, filteredSongs.length);
             
             loadedCount++;
             queryStatus.value = `歌曲信息加载中 (${loadedCount}/${total})`;
             
-            if (albumSongs.length > 0) {
-                addLog(`  ✓ ${album.album_name}: ${albumSongs.length} 首`, 'success', 'fas fa-check');
+            if (removedCount > 0) {
+                addLog(`  ✓ ${album.album_name}: ${filteredSongs.length} 首（已过滤${removedCount}首）`, 'success', 'fas fa-check');
             } else {
-                addLog(`  ✗ ${album.album_name}: 没有歌曲`, 'warning', 'fas fa-times');
+                addLog(`  ✓ ${album.album_name}: ${filteredSongs.length} 首`, 'success', 'fas fa-check');
             }
         }),
         5
     );
     
-    // 汇总
+    // 全部加载完成后，移除所有有效歌曲为0的专辑
+    if (albumsToRemove.length > 0) {
+        albums.value = albums.value.filter(a => !albumsToRemove.includes(String(a.album_id)));
+        // 同时清理 map 中的数据
+        const map = new Map(albumSongMap.value);
+        for (const key of albumsToRemove) {
+            map.delete(key);
+        }
+        albumSongMap.value = map;
+        addLog(`📋 已隐藏 ${albumsToRemove.length} 个无有效歌曲的专辑`, 'info', 'fas fa-filter');
+    }
+    
+    // 汇总（只算过滤后有效歌曲）
     let totalSongs = 0;
     for (const songs of albumSongMap.value.values()) {
         totalSongs += songs.length;
     }
     queryStatus.value = `加载完成，共 ${totalSongs} 首歌曲`;
-    addLog(`✅ 全部加载完成，共 ${totalSongs} 首歌曲`, 'success', 'fas fa-check-circle');
+    addLog(`✅ 全部加载完成，共 ${albums.value.length} 个专辑 / ${totalSongs} 首歌曲`, 'success', 'fas fa-check-circle');
 };
 
 // 并发限制函数
@@ -967,11 +1013,12 @@ const parallelLimit = async (tasks, limit) => {
 
 // 切换专辑选择
 const toggleAlbumSelection = (albumId) => {
+    const key = String(albumId);
     const set = new Set(selectedAlbums.value);
-    if (set.has(albumId)) {
-        set.delete(albumId);
+    if (set.has(key)) {
+        set.delete(key);
     } else {
-        set.add(albumId);
+        set.add(key);
     }
     selectedAlbums.value = set;
 };
@@ -979,7 +1026,7 @@ const toggleAlbumSelection = (albumId) => {
 // 全选专辑
 const selectAllAlbums = () => {
     const set = new Set();
-    albums.value.forEach(album => set.add(album.album_id));
+    albums.value.forEach(album => set.add(String(album.album_id)));
     selectedAlbums.value = set;
     addLog(`已全选 ${albums.value.length} 个专辑`, 'info', 'fas fa-check-square');
 };

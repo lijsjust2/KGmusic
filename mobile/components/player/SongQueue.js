@@ -1,5 +1,6 @@
 import { ref } from 'vue';
 import { MoeAuthStore } from '../../stores/store';
+import { get } from '../../utils/request';
 
 
 const DEV = typeof import.meta !== 'undefined' ? import.meta.env.DEV : true
@@ -135,11 +136,14 @@ export default function useSongQueue(t, musicQueueStore, queueList = null) {
         } catch (error) {
             console.error('[SongQueue] 获取音乐地址出错:', error);
             currentSong.value.author = currentSong.value.name = t('huo-qu-yin-le-di-zhi-shi-bai');
-            if (error.response?.data?.error?.includes('验证')) {
+            const errData = error.response?.data;
+            const errcode = errData?.errcode || errData?.error_code;
+            const errMsg = errData?.error || errData?.msg || errData?.error_msg || '';
+            if (errcode === 20028 || errMsg.includes('需要验证') || errMsg.includes('需要登录')) {
                 window.$modal.alert('账户风控,请稍候重试!');
                 return { error: true};
             }
-            if (error.response?.data?.status == 2) {
+            if (errData?.status == 2) {
                 window.$modal.alert(t('deng-lu-shi-xiao-qing-zhong-xin-deng-lu'));
                 return { error: true};
             }

@@ -321,7 +321,13 @@ const signIn = async () => {
             window.$modal.alert(`签到成功，获得${res.data.award_vip_hour}小时VIP时长`);
         }
     } catch (error) {
-        window.$modal.alert('签到失败![该接口将在未来被移除]');
+        const data = error.response?.data;
+        const errCode = data?.error_code || data?.errcode;
+        if (errCode === 131001 || errCode === 297002) {
+            window.$modal.alert(data?.error_msg || '今天已经签到过了');
+        } else {
+            window.$modal.alert('签到失败![该接口将在未来被移除]');
+        }
     }
 }
 const getVip = async () => {
@@ -337,13 +343,24 @@ const getVip = async () => {
                 }
             } catch (error) {
                 const data = error.response?.data || error.response;
-                window.$modal.alert(data?.error_msg || '升级VIP失败, 一天仅限一次');
+                const errCode = data?.error_code;
+                if (errCode === 131001 || errCode === 297002) {
+                    window.$modal.alert(data?.error_msg || (errCode === 297002 ? '已经领取过升级vip奖励' : '今天已经签到过了'));
+                } else {
+                    window.$modal.alert(data?.error_msg || '升级VIP失败, 一天仅限一次');
+                }
             }
         } else if (vipResponse.status === 1) {
             window.$modal.alert(`签到成功，获得1天畅听VIP`);
         }
     } catch (error) {
-        window.$modal.alert('获取VIP失败, 一天仅限一次');
+        const data = error.response?.data || error.response;
+        const errCode = data?.error_code || data?.errcode;
+        if (errCode === 131001 || errCode === 297002) {
+            window.$modal.alert(data?.error_msg || (errCode === 297002 ? '已经领取过升级vip奖励' : '今天已经签到过了'));
+        } else {
+            window.$modal.alert(data?.error_msg || '获取VIP失败, 一天仅限一次');
+        }
     }
 }
 const addAllSongsToQueue = () => {

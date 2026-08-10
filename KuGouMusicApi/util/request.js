@@ -99,6 +99,7 @@ const createRequest = (options) => {
       headers: Object.assign({}, options?.headers || {}, headers),
       withCredentials: true,
       responseType: options.responseType,
+      timeout: 15000,
     };
 
     const proxyConfig = resolveProxy();

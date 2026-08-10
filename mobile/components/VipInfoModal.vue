@@ -107,7 +107,12 @@ const handleClaimHourVip = async () => {
     }
   } catch (error) {
     const errBody = error.response?.data
-    message.error(errBody?.data || errBody?.msg || '领取失败，请稍后重试')
+    const errCode = errBody?.error_code || errBody?.errcode
+    if (errCode === 131001 || errCode === 297002) {
+      message.success(errBody?.error_msg || '今天已经签到过了')
+    } else {
+      message.error(errBody?.data || errBody?.msg || '领取失败，请稍后重试')
+    }
   } finally {
     claiming.value = false
   }
@@ -126,7 +131,12 @@ const handleClaimDayVip = async () => {
     }
   } catch (error) {
     const errBody = error.response?.data
-    message.error(errBody?.data || errBody?.msg || '领取失败，请稍后重试')
+    const errCode = errBody?.error_code
+    if (errCode === 131001 || errCode === 297002) {
+      message.success(errBody?.error_msg || '今天已经签到过了')
+    } else {
+      message.error(errBody?.data || errBody?.msg || '领取失败，请稍后重试')
+    }
   } finally {
     claimingDay.value = false
   }
@@ -144,7 +154,12 @@ const handleUpgradeVip = async () => {
     }
   } catch (error) {
     const errBody = error.response?.data
-    message.error(errBody?.data || errBody?.msg || '升级失败，请稍后重试')
+    const errCode = errBody?.error_code
+    if (errCode === 131001 || errCode === 297002) {
+      message.success(errBody?.error_msg || '今天已经签到过了')
+    } else {
+      message.error(errBody?.data || errBody?.msg || '升级失败，请稍后重试')
+    }
   } finally {
     upgrading.value = false
   }

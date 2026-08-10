@@ -648,6 +648,13 @@ const downloadSong = async (song, quality) => {
             
         } catch (error) {
             lastError = error;
+            // 20028 风控：dfid 问题与音质无关，换音质重试无意义，直接跳出
+            const errData = error.response?.data;
+            const errcode = errData?.errcode || errData?.error_code;
+            if (errcode === 20028) {
+                console.warn(`[BatchDownload] 歌曲 ${song.name} 触发风控(20028)，跳过音质降级`);
+                break;
+            }
             console.warn(`[BatchDownload] 歌曲 ${song.name} 尝试 ${getQualityDescription(currentQuality)} 失败:`, error.message);
             currentQualityIndex++;
         }

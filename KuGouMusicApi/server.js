@@ -731,23 +731,127 @@ async function consturctServer(moduleDefs) {
     const MAX_HISTORY = 200;
     const QUALITY_FALLBACK_ORDER = ['flac', '320', '128'];
 
-    // 内部调用 song/url 模块获取下载链接（带用户鉴权）
-    const fetchSongUrl = async (hash, quality, authHeader, cookiesStr) => {
+    // ========== 酷狗风控 dfid 注册 ==========
+    // 根因：/song/url 接口必须携带通过 /register/dev 注册的真实 dfid
+    // 否则会返回 errcode=20028 status=0 error="本次请求需要验证"
+    // 做法：服务端主动调用本地 /register/dev 获取合法 dfid，并全局缓存
+    const DFID_CACHE_MAX_AGE = 1000 * 60 * 60 * 12; // 12 小时缓存，避免每次重新注册
+    const dfidCache = { value: '', updatedAt: 0, lock: Promise.resolve() };
+
+    /**
+     * 解析 Set-Cookie 数组，找到 dfid=xxx 的值
+     * @param {string[]|undefined} setCookies
+     * @returns {string}
+     */
+    const pickDfidFromSetCookies = (setCookies) => {
+      if (!Array.isArray(setCookies) || setCookies.length === 0) return '';
+      for (const raw of setCookies) {
+        const m = /(?:^|;\s*)dfid=([^;]+)/i.exec(raw);
+        if (m) return m[1];
+      }
+      return '';
+    };
+
+    /**
+     * 确保持有已注册的合法 dfid
+     * @returns {Promise<string>}
+     */
+    const ensureRegisteredDfid = async () => {
+      const now = Date.now();
+      if (dfidCache.value && now - dfidCache.updatedAt < DFID_CACHE_MAX_AGE) {
+        return dfidCache.value;
+      }
+      // 串行化：并发只执行一次注册
+      dfidCache.lock = dfidCache.lock.then(async () => {
+        if (dfidCache.value && Date.now() - dfidCache.updatedAt < DFID_CACHE_MAX_AGE) {
+          return dfidCache.value;
+        }
+        const port = Number(process.env.PORT || '3000');
+        const apiGuid = process.env.KUGOU_API_GUID || guid;
+        try {
+          const resp = await axios.get(`http://127.0.0.1:${port}/register/dev`, {
+            headers: { Cookie: `KUGOU_API_GUID=${apiGuid}` },
+            timeout: 15000,
+          });
+          const dfid = pickDfidFromSetCookies(resp.headers['set-cookie'])
+            || (resp.data && resp.data.data && resp.data.data.dfid)
+            || (resp.data && resp.data.body && resp.data.body.data && resp.data.body.data.dfid)
+            || '';
+          if (dfid) {
+            dfidCache.value = String(dfid);
+            dfidCache.updatedAt = Date.now();
+            logDownload(`DFID: 注册成功 dfid=${dfidCache.value}`);
+            return dfidCache.value;
+          }
+          logDownload(`DFID: /register/dev 未返回 dfid body=${JSON.stringify(resp.data).slice(0, 300)}`);
+        } catch (e) {
+          logDownload(`DFID: /register/dev 调用异常: ${e.message}`);
+        }
+        return dfidCache.value; // 失败就返回已有的（或空），让上层再决定
+      }).catch((e) => {
+        logDownload(`DFID: 注册锁异常: ${e.message}`);
+        return dfidCache.value;
+      });
+      return await dfidCache.lock;
+    };
+
+    /**
+     * 将 cookies 字符串中 dfid 强制替换为给定值（或在末尾追加）
+     */
+    const injectDfidIntoCookieStr = (cookiesStr, dfid) => {
+      if (!dfid) return cookiesStr || '';
+      const base = (cookiesStr || '').replace(/(?:^|;\s*)dfid=[^;]*/gi, '').replace(/^;\s*/, '');
+      return base ? `${base}; dfid=${dfid}` : `dfid=${dfid}`;
+    };
+
+    // 内部调用 song/url 模块获取下载链接（带用户鉴权 + 合法 dfid）
+    const fetchSongUrl = async (hash, quality, authHeader, cookiesStr, allowRefresh = true) => {
       const port = Number(process.env.PORT || '3000');
       const reqUrl = `http://127.0.0.1:${port}/song/url`;
       const params = { hash: String(hash || '').toLowerCase() };
       if (quality && quality !== '128') params.quality = quality;
+
+      // 先拿合法 dfid，写进 Cookie，覆盖 song_url.js 中 randomString(24) 的假 dfid
+      const dfid = await ensureRegisteredDfid();
+      const finalCookie = injectDfidIntoCookieStr(cookiesStr, dfid);
+
       try {
         const resp = await axios.get(reqUrl, {
           params,
           headers: {
             ...(authHeader ? { Authorization: authHeader } : {}),
-            ...(cookiesStr ? { Cookie: cookiesStr } : {}),
+            ...(finalCookie ? { Cookie: finalCookie } : {}),
           },
           timeout: 30000,
         });
-        return resp.data;
+        const body = resp.data || {};
+        // 命中风控：errcode=20028 status=0 error="本次请求需要验证"
+        const needVerify = body && (
+          (body.errcode === 20028) ||
+          (body.status === 0 && typeof body.error === 'string' && body.error.includes('需要验证'))
+        );
+        if (needVerify && allowRefresh) {
+          logDownload(`DFID: 触发 20028，清理缓存并刷新 dfid 后重试 hash=${hash}`);
+          dfidCache.value = '';
+          dfidCache.updatedAt = 0;
+          return fetchSongUrl(hash, quality, authHeader, cookiesStr, false);
+        }
+        return body;
       } catch (e) {
+        // axios 抛错：如果响应本身就是 502（模块内部把 status=0 当成 502 reject 了）也可能带 20028
+        const errBody = e && e.response && e.response.data;
+        if (
+          allowRefresh &&
+          errBody && (
+            errBody.errcode === 20028 ||
+            (errBody.status === 0 && typeof errBody.error === 'string' && errBody.error.includes('需要验证'))
+          )
+        ) {
+          logDownload(`DFID: 响应异常中检测到 20028，刷新 dfid 后重试 hash=${hash}`);
+          dfidCache.value = '';
+          dfidCache.updatedAt = 0;
+          return fetchSongUrl(hash, quality, authHeader, cookiesStr, false);
+        }
         logDownload(`ERROR: 获取下载链接失败 hash=${hash} quality=${quality}: ${e.message}`);
         return null;
       }
@@ -1204,6 +1308,17 @@ async function consturctServer(moduleDefs) {
           ...cookieToJson(authHeader),
         };
       }
+
+      // 确保所有模块请求都携带合法 dfid（绕过 song_url.js 的 randomString 假 dfid）
+      if (!query.cookie.dfid || typeof query.cookie.dfid !== 'string' || query.cookie.dfid.length < 10) {
+        try {
+          const dfid = await ensureRegisteredDfid();
+          if (dfid) {
+            query.cookie.dfid = dfid;
+          }
+        } catch (_) { /* 注册失败不阻塞请求 */ }
+      }
+
       try {
         const moduleResponse = await moduleDef.module(query, (config) => {
           let ip = req.ip;

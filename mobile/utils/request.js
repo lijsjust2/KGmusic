@@ -31,6 +31,7 @@ httpClient.interceptors.request.use(
         if (token) authParts.push(`token=${token}`);
         if (userid) authParts.push(`userid=${userid}`);
         if (t1) authParts.push(`t1=${t1}`);
+        if (dfid) authParts.push(`dfid=${dfid}`);
         if (mid) authParts.push(`KUGOU_API_MID=${(mid)}`);
         if (guid) authParts.push(`KUGOU_API_GUID=${(guid)}`);
         if (serverDev) authParts.push(`KUGOU_API_DEV=${(serverDev)}`);
@@ -91,10 +92,30 @@ httpClient.interceptors.response.use(
                 return Promise.reject(error);
             }
 
-            if (error.response?.data?.data) {
+            if (error.response?.data) {
                 const errorData = error.response.data;
                 const errorMsg = errorData.error || errorData.msg || errorData.error_msg || '';
                 const errcode = errorData.errcode || errorData.error_code;
+
+                if (errcode === 131001 || errcode === 297002) {
+                    return Promise.reject(error);
+                }
+
+                // 酷狗风控：errcode=20028 说明 dfid(设备ID)失效 → 强制重新注册设备后重试一次
+                const needVerify = errcode === 20028 ||
+                    (typeof errorMsg === 'string' && errorMsg.includes('需要验证'));
+                if (needVerify && !error.config?._dfidRetry) {
+                    try {
+                        const MoeAuth = MoeAuthStore();
+                        // 先清空旧 Device，再强制重新注册获取新 dfid
+                        MoeAuth.Device = null;
+                        await MoeAuth.initDevice(true);
+                        const retryConfig = { ...error.config, _dfidRetry: true };
+                        return httpClient(retryConfig);
+                    } catch (dfidErr) {
+                        console.warn('[20028] 刷新dfid失败，仍走原错误逻辑:', dfidErr?.message);
+                    }
+                }
 
                 if (errorMsg.includes('需要验证') || errorMsg.includes('需要登录') || errcode === 20028) {
                     return Promise.reject(error);

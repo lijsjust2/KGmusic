@@ -84,10 +84,13 @@ export const MoeAuthStore = defineStore('MoeData', {
             }
             return null;
         },
-        async initDevice() {
-            if (this.Device) return this.Device;
+        async initDevice(forceRefresh = false) {
+            // 有缓存且不强制刷新时直接返回（20028风控时需要forceRefresh强制重新注册dfid）
+            if (!forceRefresh && this.Device) return this.Device;
             try {
-                const response = await registerDeviceApi.get('/register/dev?register');
+                const response = await registerDeviceApi.get('/register/dev?register', {
+                    headers: { 'Cache-Control': 'no-store' }
+                });
                 const device = response?.data?.data;
                 if (device) {
                     this.Device = device;

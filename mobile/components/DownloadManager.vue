@@ -588,7 +588,11 @@ const fetchDownloadUrl = async (quality) => {
     
     log('网络请求失败:', errorMsg)
     
-    if (errorMsg?.includes('需要验证') || errorMsg?.includes('需要登录') || errorData?.errcode === 20028) {
+    if (errorMsg?.includes('需要验证') || errorData?.errcode === 20028 || errorData?.error_code === 20028) {
+      throw new Error('获取下载链接失败: 风控验证，请稍后重试')
+    }
+
+    if (errorMsg?.includes('需要登录')) {
       throw new Error('获取下载链接失败: 需要登录')
     }
     
