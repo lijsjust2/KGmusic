@@ -922,9 +922,12 @@ async function consturctServer(moduleDefs) {
         (successList.length > 0 ? (successList[0].song.author || '') :
           (batchTasks.length > 0 ? (batchTasks[0].song.author || '') : '未知艺术家'));
 
-      // 格式化 Markdown 内容：标题用 h3（与正文相差约2px），专辑名用加粗
-      let content = `### ${displayArtist}批量下载：${totalCount}首，音质${quality}\n\n`;
-      content += `**成功下载${successCount}首，失败${failedCount}首**\n\n`;
+      const SONGS_PER_ROW = 5;
+      const SEP = '    |    '; // 歌曲之间的分隔符
+
+      // 格式化 Markdown 内容：与前端 pushplus.js formatDownloadResultForPush 一致
+      let content = `## 🎵 ${displayArtist} · ${batch.albums.size}个专辑下载任务\n\n`;
+      content += `✅ 成功：**${successCount}**首　❌ 失败：**${failedCount}**首\n\n`;
 
       if (successList.length > 0) {
         const groups = {};
@@ -934,29 +937,31 @@ async function consturctServer(moduleDefs) {
           if (!groups[safeAlbum]) groups[safeAlbum] = [];
           groups[safeAlbum].push(item.song.name);
         }
-        content += `---\n\n**成功下载的明细：**\n\n`;
         let albumIndex = 1;
         for (const [albumName, songNames] of Object.entries(groups)) {
-          content += `**${albumIndex}、${albumName}**\n\n`;
-          songNames.forEach((name, idx) => { content += `${idx + 1}. ${name}\n`; });
+          content += `📀 **${albumIndex}. ${albumName}**（共${songNames.length}首）\n\n`;
+          for (let i = 0; i < songNames.length; i += SONGS_PER_ROW) {
+            const row = songNames.slice(i, i + SONGS_PER_ROW);
+            content += row.join(SEP) + '\n';
+          }
           content += '\n';
           albumIndex++;
         }
       }
 
       if (failedList.length > 0) {
-        content += `---\n\n**失败的明细：**\n\n`;
-        failedList.forEach((item, index) => {
-          content += `${index + 1}. ${item.song.name}`;
-          if (item.error) content += ` (${item.error})`;
-          content += '\n';
-        });
+        content += `❌ **下载失败（${failedList.length}首）：**\n\n`;
+        for (let i = 0; i < failedList.length; i += SONGS_PER_ROW) {
+          const rowItems = failedList.slice(i, i + SONGS_PER_ROW).map(item => item.song.name);
+          content += rowItems.join(SEP) + '\n';
+        }
+        content += '\n';
       }
 
       try {
         await axios.post('http://www.pushplus.plus/send', {
           token: batch.pushplusToken,
-          title: `🎵 已经完成${successCount}首歌曲下载`,
+          title: `${successCount}首歌曲下载完成`,
           content: content,
           template: 'markdown',
         }, { timeout: 15000 });
