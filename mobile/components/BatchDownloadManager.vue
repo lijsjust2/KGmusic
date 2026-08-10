@@ -536,15 +536,14 @@ const downloadSong = async (song, quality) => {
     if (!hash) {
         throw new Error('歌曲 hash 不存在');
     }
-    
+
     const qualityFallbackOrder = [...QUALITY_FALLBACK_ORDER];
-    let currentQualityIndex = qualityFallbackOrder.indexOf(quality.quality);
-    if (currentQualityIndex === -1) {
-        currentQualityIndex = qualityFallbackOrder.indexOf('320');
-        if (currentQualityIndex === -1) currentQualityIndex = 2;
-    }
-    
+    const startIndex = qualityFallbackOrder.indexOf(quality.quality);
+    let currentQualityIndex = startIndex === -1 ? qualityFallbackOrder.indexOf('320') : startIndex;
+    if (currentQualityIndex === -1) currentQualityIndex = 2;
+
     let lastError = null;
+    let dfidRefreshed = false;
     
     while (currentQualityIndex < qualityFallbackOrder.length) {
         const currentQuality = qualityFallbackOrder[currentQualityIndex];
@@ -648,12 +647,28 @@ const downloadSong = async (song, quality) => {
             
         } catch (error) {
             lastError = error;
-            // 20028 风控：dfid 问题与音质无关，换音质重试无意义，直接跳出
             const errData = error.response?.data;
             const errcode = errData?.errcode || errData?.error_code;
             if (errcode === 20028) {
-                console.warn(`[BatchDownload] 歌曲 ${song.name} 触发风控(20028)，跳过音质降级`);
-                break;
+                console.warn(`[BatchDownload] 歌曲 ${song.name} 触发风控(20028) [${getQualityDescription(currentQuality)}]`);
+                // 首次风控：刷新dfid，从原始音质重新开始降级循环
+                if (!dfidRefreshed) {
+                    dfidRefreshed = true;
+                    try {
+                        const MoeAuth = MoeAuthStore();
+                        MoeAuth.Device = null;
+                        await MoeAuth.initDevice(true);
+                        console.log('[BatchDownload] dfid已刷新，从原始音质重新开始');
+                        currentQualityIndex = startIndex === -1 ? qualityFallbackOrder.indexOf('320') : startIndex;
+                        if (currentQualityIndex === -1) currentQualityIndex = 2;
+                        continue;
+                    } catch (e) {
+                        console.warn('[BatchDownload] dfid刷新失败，降级继续试', e.message);
+                    }
+                }
+                // dfid已刷新过或刷新失败：降级音质继续试
+                currentQualityIndex++;
+                continue;
             }
             console.warn(`[BatchDownload] 歌曲 ${song.name} 尝试 ${getQualityDescription(currentQuality)} 失败:`, error.message);
             currentQualityIndex++;

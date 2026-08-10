@@ -1086,23 +1086,19 @@ const handleDownloadComplete = async (result) => {
     if (pushplusToken.value) {
         try {
             addLog('正在发送 PushPlus 推送...', 'info', 'fas fa-paper-plane');
-            
-            // 获取音质信息
-            const qualityLabel = quality?.desc || quality?.name || quality || '';
-            
-            // 使用新的格式化函数生成 Markdown 内容
-            const content = formatDownloadResultForPush({
-                totalCount: totalCount,
-                quality: qualityLabel,
+
+            const { title, content } = formatDownloadResultForPush({
+                artist: artistName.value,
+                albumCount: selectedAlbums.value.size,
+                successCount: successCount,
+                failedCount: failedCount,
                 successList: successList,
                 failedList: failedList
             });
-            
-            const title = `🎵 批量下载完成`;
-            
+
             // 使用 Markdown 模板
             const pushResult = await sendPushNotification(pushplusToken.value, title, content, 'markdown');
-            
+
             if (pushResult.success) {
                 addLog('✓ PushPlus 推送成功', 'success', 'fas fa-check-circle');
             } else {

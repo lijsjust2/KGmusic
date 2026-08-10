@@ -79,63 +79,73 @@ export function formatLogsForPush(logs, maxLines = 100) {
 }
 
 /**
- * 格式化下载结果为 Markdown 格式（按专辑分组）
+ * 格式化下载结果为 PushPlus Markdown 格式
  * @param {Object} params - 下载结果参数
- * @param {number} params.totalCount - 总歌曲数
- * @param {string} params.quality - 音质
+ * @param {string} params.artist - 歌手名
+ * @param {number} params.albumCount - 专辑数量
+ * @param {number} params.successCount - 成功数
+ * @param {number} params.failedCount - 失败数
  * @param {Array} params.successList - 成功列表
  * @param {Array} params.failedList - 失败列表
- * @returns {string} Markdown 格式内容
+ * @returns {Object} { title, content } - 标题和 Markdown 内容
  */
-export function formatDownloadResultForPush({ totalCount, quality, successList, failedList }) {
+export function formatDownloadResultForPush({ artist, albumCount, successCount, failedCount, successList, failedList }) {
+    const artistLabel = artist || '未知歌手';
+    const albumLabel = albumCount || 0;
+
+    const SONGS_PER_ROW = 5;
+    const SEP = '    |    '; // 歌曲之间的分隔符
     let content = '';
-    
-    // 汇总信息
-    content += `## 总下载歌曲：${totalCount}首，音质${quality}\n\n`;
-    content += `**成功下载${successList.length}首，失败${failedList.length}首**\n\n`;
-    
-    // 按专辑分组的成功列表
+
+    // 大标题
+    content += `## 🎵 ${artistLabel} · ${albumLabel}个专辑下载任务\n\n`;
+
+    // 统计信息
+    content += `✅ 成功：**${successCount}**首　❌ 失败：**${failedCount}**首\n\n`;
+
+    // 成功下载的明细（按专辑分组，每行5首，无表格）
     if (successList && successList.length > 0) {
-        // 按专辑分组
         const groups = {};
         for (const item of successList) {
             const song = item.song || {};
             const songInfo = song.songInfo || {};
             const album = songInfo.album || song.album || song.album_name || '未知专辑';
             const safeAlbum = album.trim() || '未知专辑';
-            
+
             if (!groups[safeAlbum]) {
                 groups[safeAlbum] = [];
             }
             groups[safeAlbum].push(item.name);
         }
-        
-        content += `---\n\n`;
-        content += `**成功下载的明细：**\n\n`;
-        
-        let albumIndex = 1;
+
+        let idx = 1;
         for (const [albumName, songNames] of Object.entries(groups)) {
-            content += `### ${albumIndex}、${albumName}\n\n`;
-            songNames.forEach((songName, idx) => {
-                content += `${idx + 1}. ${songName}\n`;
-            });
+            content += `📀 **${idx}. ${albumName}**（共${songNames.length}首）\n\n`;
+
+            for (let i = 0; i < songNames.length; i += SONGS_PER_ROW) {
+                const row = songNames.slice(i, i + SONGS_PER_ROW);
+                content += row.join(SEP) + '\n';
+            }
+
             content += '\n';
-            albumIndex++;
+            idx++;
         }
     }
-    
+
     // 失败列表
     if (failedList && failedList.length > 0) {
-        content += `---\n\n`;
-        content += `**失败的明细：**\n\n`;
-        failedList.forEach((item, index) => {
-            content += `${index + 1}. ${item.name}`;
-            if (item.error) {
-                content += ` (${item.error})`;
-            }
-            content += '\n';
-        });
+        content += `❌ **下载失败（${failedList.length}首）：**\n\n`;
+        for (let i = 0; i < failedList.length; i += SONGS_PER_ROW) {
+            const rowItems = failedList.slice(i, i + SONGS_PER_ROW).map(item => item.name);
+            content += rowItems.join(SEP) + '\n';
+        }
+        content += '\n';
     }
-    
-    return content;
+
+    // 列表通知用的简短标题
+    const title = `${successCount}首歌曲下载完成`;
+
+    return { title, content };
 }
+
+

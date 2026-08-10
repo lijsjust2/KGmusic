@@ -477,14 +477,13 @@ const handleQualitySelect = async (quality) => {
 
 const fetchDownloadUrlWithFallback = async (quality) => {
   const qualityFallbackOrder = [...QUALITY_FALLBACK_ORDER]
-  let currentQualityIndex = qualityFallbackOrder.indexOf(quality.quality)
-  if (currentQualityIndex === -1) {
-    currentQualityIndex = qualityFallbackOrder.indexOf('320')
-    if (currentQualityIndex === -1) currentQualityIndex = 2
-  }
-  
+  const startIndex = qualityFallbackOrder.indexOf(quality.quality)
+  let currentQualityIndex = startIndex === -1 ? qualityFallbackOrder.indexOf('320') : startIndex
+  if (currentQualityIndex === -1) currentQualityIndex = 2
+
   let lastError = null
   let vipClaimed = false
+  let dfidRefreshed = false
   
   while (currentQualityIndex < qualityFallbackOrder.length) {
     const currentQuality = qualityFallbackOrder[currentQualityIndex]
@@ -502,7 +501,30 @@ const fetchDownloadUrlWithFallback = async (quality) => {
     } catch (error) {
       lastError = error
       log(`${getQualityDescription(currentQuality)} 获取失败:`, error.message)
-      
+
+      // 20028 风控：首次刷新dfid从原始音质重试，之后降级音质继续试
+      if (error.message.includes('风控验证')) {
+        log(`触发风控(20028) [${getQualityDescription(currentQuality)}]`)
+        if (!dfidRefreshed) {
+          dfidRefreshed = true
+          try {
+            MoeAuth.Device = null
+            await MoeAuth.initDevice(true)
+            log('dfid已刷新，从原始音质重新开始')
+            currentQualityIndex = startIndex === -1 ? qualityFallbackOrder.indexOf('320') : startIndex
+            if (currentQualityIndex === -1) currentQualityIndex = 2
+            continue
+          } catch (e) {
+            log('dfid刷新失败，降级继续试', e.message)
+          }
+        }
+        currentQualityIndex++
+        if (currentQualityIndex < qualityFallbackOrder.length) {
+          log(`降级到 ${getQualityDescription(qualityFallbackOrder[currentQualityIndex])}...`)
+        }
+        continue
+      }
+
       if (error.message.includes('需要VIP') || error.message.includes('需要登录')) {
         if (!MoeAuth.isAuthenticated) {
           const shouldLogin = showLoginPrompt()
