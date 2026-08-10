@@ -12,7 +12,7 @@ export default function useSongQueue(t, musicQueueStore, queueList = null) {
     const NextSong = ref([]);
     const timeoutId = ref(null);
 
-    const addSongToQueue = async (hash, name, img, author, isReset = true, formatRetryCount = 0) => {
+    const addSongToQueue = async (hash, name, img, author, isReset = true, formatRetryCount = 0, dfidRetry = false) => {
         if(!hash) return { error: true };
         const currentSongHash = currentSong.value.hash;
         if (typeof window !== 'undefined' && typeof window.electron !== 'undefined') {
@@ -135,15 +135,31 @@ export default function useSongQueue(t, musicQueueStore, queueList = null) {
             return { song };
         } catch (error) {
             console.error('[SongQueue] 获取音乐地址出错:', error);
-            currentSong.value.author = currentSong.value.name = t('huo-qu-yin-le-di-zhi-shi-bai');
             const errData = error.response?.data;
             const errcode = errData?.errcode || errData?.error_code;
             const errMsg = errData?.error || errData?.msg || errData?.error_msg || '';
-            if (errcode === 20028 || errMsg.includes('需要验证') || errMsg.includes('需要登录')) {
+
+            // 20028风控：刷新dfid后重试一次（与下载流程一致）
+            if (errcode === 20028 || errMsg.includes('需要验证')) {
+                if (!dfidRetry) {
+                    console.warn('[SongQueue] 触发风控(20028)，刷新dfid后重试');
+                    try {
+                        const MoeAuth = MoeAuthStore();
+                        MoeAuth.Device = null;
+                        await MoeAuth.initDevice(true);
+                        // 用新dfid重试本曲
+                        return addSongToQueue(hash, name, img, author, isReset, formatRetryCount, true);
+                    } catch (e) {
+                        console.warn('[SongQueue] dfid刷新失败', e.message);
+                    }
+                }
+                currentSong.value.author = currentSong.value.name = t('huo-qu-yin-le-di-zhi-shi-bai');
                 window.$modal.alert('账户风控,请稍候重试!');
-                return { error: true};
+                return { error: true };
             }
-            if (errData?.status == 2) {
+
+            currentSong.value.author = currentSong.value.name = t('huo-qu-yin-le-di-zhi-shi-bai');
+            if (errMsg.includes('需要登录') || errData?.status == 2) {
                 window.$modal.alert(t('deng-lu-shi-xiao-qing-zhong-xin-deng-lu'));
                 return { error: true};
             }
