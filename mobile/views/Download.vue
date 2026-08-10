@@ -397,20 +397,6 @@ const dateFrom = ref(localStorage.getItem('download_date_from') || '');
 const dateTo = ref(localStorage.getItem('download_date_to') || '');
 const querying = ref(false);
 
-// 歌手名查询（带 localStorage 缓存，key: artist_id -> name）
-const ARTIST_CACHE_KEY = 'download_artist_cache';
-const loadArtistCache = () => {
-    try { return JSON.parse(localStorage.getItem(ARTIST_CACHE_KEY) || '{}'); } catch (_) { return {}; }
-};
-const saveArtistCache = (id, name) => {
-    try {
-        const cache = loadArtistCache();
-        cache[String(id)] = String(name);
-        localStorage.setItem(ARTIST_CACHE_KEY, JSON.stringify(cache));
-    } catch (_) {}
-};
-const getCachedArtist = (id) => loadArtistCache()[String(id)] || '';
-
 const artistName = ref('');
 const artistLookupStatus = ref('idle'); // idle | loading | success | error
 const artistLookupMsg = ref('');
@@ -420,8 +406,8 @@ const _lookupPendingId = ref('');
 // 记录上次查询的ID，用于检测ID是否发生了变化
 let _lastLookupId = '';
 
-// 统一的歌手名查询函数：先查缓存 → 命中立即显示 → 未命中再请求 API
-// 可被失焦、页面加载、路由变化、ID变化多处调用
+// 统一的歌手名查询函数：每次都查接口，不做缓存
+// 只要ID变化，立刻清空旧的歌手名，避免显示上一个歌手
 const lookupArtistName = async (id) => {
     const trimmedId = String(id || '').trim();
     const idChanged = trimmedId !== _lastLookupId;
@@ -434,16 +420,8 @@ const lookupArtistName = async (id) => {
         return;
     }
 
-    // 先查缓存
-    const cachedName = getCachedArtist(trimmedId);
-
-    if (cachedName) {
-        // 缓存命中：立即显示（歌手ID变化时也不会闪烁旧值）
-        artistName.value = cachedName;
-        artistLookupStatus.value = 'success';
-        artistLookupMsg.value = '';
-    } else if (idChanged) {
-        // **关键修复**：ID变化了且缓存没命中 → 立刻清空旧歌手名，避免显示上一个歌手
+    // ID变化了 → 立刻清空旧歌手名，避免显示上一个歌手
+    if (idChanged) {
         artistName.value = '';
     }
 
@@ -470,21 +448,16 @@ const lookupArtistName = async (id) => {
             artistName.value = name;
             artistLookupStatus.value = 'success';
             artistLookupMsg.value = '';
-            saveArtistCache(trimmedId, name);
-        } else if (!cachedName) {
-            // 缓存没命中且接口没查到
+        } else {
             artistLookupStatus.value = 'error';
             artistLookupMsg.value = '找不到歌手，请检查歌手ID';
             artistName.value = '';
         }
-        // 如果缓存命中但接口没查到，保持缓存结果不报错
     } catch (err) {
         console.warn('查询歌手详情失败:', err);
-        if (!cachedName) {
-            artistLookupStatus.value = 'error';
-            artistLookupMsg.value = '找不到歌手，请检查歌手ID';
-            artistName.value = '';
-        }
+        artistLookupStatus.value = 'error';
+        artistLookupMsg.value = '找不到歌手，请检查歌手ID';
+        artistName.value = '';
     } finally {
         _lookupPendingId.value = '';
     }
