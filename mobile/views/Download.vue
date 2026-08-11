@@ -481,22 +481,29 @@ const _normalizeSongName = (name) => {
     return String(name || '').trim().toLowerCase();
 };
 
-// 计算选中的歌曲列表（从选中专辑收集歌曲，并应用过滤 + 按歌曲名去重）
-const selectedSongList = computed(() => {
+// 内部 computed：同时返回歌曲列表和被去重跳过的明细，避免重复计算
+// 注意：computed 内不修改其他响应式状态（避免副作用导致额外渲染调度）
+const _selectedSongListInternal = computed(() => {
     const songs = [];
+    const skippedDetails = [];
     const map = albumSongMap.value;
-    duplicateSkippedCount.value = 0;
-    duplicateSkippedDetails.value = [];
 
     // 获取选中的专辑ID列表
     const selectedIds = Array.from(selectedAlbums.value);
+
+    // 预建 album_id -> album 的 Map，sort 比较器内 O(1) 查找
+    // （修复全选时 O(n² log n) find 导致主线程阻塞、界面卡死的问题）
+    const albumMap = new Map();
+    for (const al of albums.value) {
+        albumMap.set(String(al.album_id), al);
+    }
 
     // 如果开启排除重复，先按专辑发布时间从新到旧排序（优先保留最新发布专辑中的版本）
     let orderedIds = selectedIds;
     if (excludeDuplicate.value && selectedIds.length > 1) {
         orderedIds = [...selectedIds].sort((a, b) => {
-            const albumA = albums.value.find(al => String(al.album_id) === String(a));
-            const albumB = albums.value.find(al => String(al.album_id) === String(b));
+            const albumA = albumMap.get(String(a));
+            const albumB = albumMap.get(String(b));
             const dateA = _parseDateForSort(albumA?.publish_date || albumA?.publish_time);
             const dateB = _parseDateForSort(albumB?.publish_date || albumB?.publish_time);
             return dateB - dateA; // 从新到旧
@@ -517,8 +524,7 @@ const selectedSongList = computed(() => {
                 const songNameKey = _normalizeSongName(song.name);
                 if (songNameKey && seenSongNames.has(songNameKey)) {
                     // 已存在相同歌曲名的歌曲，跳过
-                    duplicateSkippedCount.value++;
-                    duplicateSkippedDetails.value.push({
+                    skippedDetails.push({
                         name: song.name,
                         album: song.albumName,
                     });
@@ -533,8 +539,17 @@ const selectedSongList = computed(() => {
             songs.push(...filtered);
         }
     }
-    return songs;
+    return { songs, skippedDetails };
 });
+
+// 对外暴露的歌曲列表
+const selectedSongList = computed(() => _selectedSongListInternal.value.songs);
+
+// 监听内部计算结果，同步更新重复歌曲统计（避免在 computed 中写副作用）
+watch(_selectedSongListInternal, (val) => {
+    duplicateSkippedCount.value = val.skippedDetails.length;
+    duplicateSkippedDetails.value = val.skippedDetails;
+}, { immediate: true });
 
 // 计算当前页的专辑
 const paginatedAlbums = computed(() => {
