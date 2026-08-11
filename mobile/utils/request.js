@@ -68,17 +68,30 @@ httpClient.interceptors.response.use(
                 }
 
                 if (MoeAuth.UserInfo?.token && MoeAuth.UserInfo?.userid) {
-                    try {
-                        // 复用 MoeAuth.refreshToken()：它用 apiGet（httpClient），
-                        // 会带完整的 Authorization header（含 dfid、KUGOU_API_GUID/MAC/DEV 等），
-                        // login_token.js 在 lite 模式下需要这些参数生成 t2 加密
-                        const refreshed = await MoeAuth.refreshToken();
-                        if (refreshed) {
-                            const retryConfig = { ...error.config, _retry: true };
-                            return httpClient(retryConfig);
+                    // refresh 最多尝试 2 次（应对网络波动导致首次 refresh 失败）
+                    for (let refreshAttempt = 0; refreshAttempt < 2; refreshAttempt++) {
+                        try {
+                            // 复用 MoeAuth.refreshToken()：它用 apiGet（httpClient），
+                            // 会带完整的 Authorization header（含 dfid、KUGOU_API_GUID/MAC/DEV 等），
+                            // login_token.js 在 lite 模式下需要这些参数生成 t2 加密
+                            const refreshed = await MoeAuth.refreshToken();
+                            if (refreshed) {
+                                const retryConfig = { ...error.config, _retry: true };
+                                return httpClient(retryConfig);
+                            }
+                            // refresh 返回 null（status!=1）说明 token 真的失效了，不再重试
+                            break;
+                        } catch (refreshErr) {
+                            // 网络异常才重试，其它错误直接放弃
+                            const isNetworkError = !refreshErr?.response;
+                            if (!isNetworkError || refreshAttempt === 1) {
+                                console.warn('[401] refresh token 失败:', refreshErr?.message);
+                                break;
+                            }
+                            // 网络波动，等 1 秒重试一次
+                            console.warn('[401] refresh token 网络异常，1 秒后重试:', refreshErr?.message);
+                            await new Promise(r => setTimeout(r, 1000));
                         }
-                    } catch {
-                        // refresh failed, fall through to logout
                     }
                 }
 

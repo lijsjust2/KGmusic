@@ -967,26 +967,36 @@ async function consturctServer(moduleDefs) {
 
     // 刷新批次 token：用 batch.authHeader 调本地 /login/token，成功后更新 batch.authHeader
     // 解决飞牛批量下载耗时长导致 token 过期的问题
+    // 带网络重试：应对本地网络波动导致 refresh 请求失败
     const refreshBatchToken = async (batch) => {
       if (!batch.authHeader) return false;
       const port = Number(process.env.PORT || '3000');
-      try {
-        const resp = await axios.get(`http://127.0.0.1:${port}/login/token`, {
-          params: {},
-          headers: { Authorization: batch.authHeader, Cookie: batch.cookiesStr || '' },
-          timeout: 15000,
-        });
-        const data = resp.data;
-        if (data?.status === 1 && data?.data?.token) {
-          // 更新 authHeader 中的 token
-          const newToken = data.data.token;
-          batch.authHeader = batch.authHeader.replace(/token=[^;]*/i, `token=${newToken}`);
-          logDownload(`token refresh 成功，新 token=${newToken.slice(0, 10)}...`);
-          return true;
+      // 最多尝试 2 次（网络波动兜底）
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const resp = await axios.get(`http://127.0.0.1:${port}/login/token`, {
+            params: {},
+            headers: { Authorization: batch.authHeader, Cookie: batch.cookiesStr || '' },
+            timeout: 15000,
+          });
+          const data = resp.data;
+          if (data?.status === 1 && data?.data?.token) {
+            // 更新 authHeader 中的 token
+            const newToken = data.data.token;
+            batch.authHeader = batch.authHeader.replace(/token=[^;]*/i, `token=${newToken}`);
+            logDownload(`token refresh 成功，新 token=${newToken.slice(0, 10)}...`);
+            return true;
+          }
+          logDownload(`token refresh 失败：${JSON.stringify(data).slice(0, 200)}`);
+          return false; // 响应正常但 status!=1，token 真的失效了，不重试
+        } catch (e) {
+          if (attempt === 0) {
+            logDownload(`token refresh 网络异常，1 秒后重试: ${e.message}`);
+            await new Promise(r => setTimeout(r, 1000));
+            continue;
+          }
+          logDownload(`token refresh 重试仍失败: ${e.message}`);
         }
-        logDownload(`token refresh 失败：${JSON.stringify(data).slice(0, 200)}`);
-      } catch (e) {
-        logDownload(`token refresh 异常: ${e.message}`);
       }
       return false;
     };

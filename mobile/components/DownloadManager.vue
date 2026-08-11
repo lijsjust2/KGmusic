@@ -484,7 +484,17 @@ const fetchDownloadUrlWithFallback = async (quality) => {
   let lastError = null
   let vipClaimed = false
   let dfidRefreshed = false
-  
+  let tokenRefreshed = false
+
+  // 单曲下载前预刷新 token（避免下载耗时较长导致 token 过期）
+  if (MoeAuth.isAuthenticated) {
+    try {
+      await MoeAuth.refreshToken()
+    } catch (e) {
+      console.warn('[Download] 预刷新 token 失败:', e?.message)
+    }
+  }
+
   while (currentQualityIndex < qualityFallbackOrder.length) {
     const currentQuality = qualityFallbackOrder[currentQualityIndex]
     const qualityObj = { 
