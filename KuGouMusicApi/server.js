@@ -300,6 +300,7 @@ async function consturctServer(moduleDefs) {
     };
 
     // 统一获取元数据（歌曲信息 + 歌词 + 封面），返回 logs 数组供前端透传
+    // 返回 null 表示元数据获取失败，调用方应据此决定是否中止下载（避免下载无标签文件）
     const fetchMetadataForSong = async (hash, quality, authHeader, cookiesStr) => {
       if (!hash) return null;
       const logs = [];
@@ -309,6 +310,14 @@ async function consturctServer(moduleDefs) {
           fetchSongInfoServer(hash, authHeader, cookiesStr),
           fetchLyricsServer(hash, authHeader, cookiesStr),
         ]);
+
+        // songInfo 为 null 表示歌曲信息获取失败，无法写入标签
+        // 返回 null 让调用方知道"元数据不可用"，避免下载无标签文件
+        if (!songInfo) {
+          logs.push('歌曲信息获取失败，元数据不可用');
+          logDownload(`WARN: 歌曲信息获取失败 hash=${hash}，元数据不可用`);
+          return null;
+        }
 
         let coverBuffer = null;
         if (songInfo?.cover) {
@@ -320,9 +329,9 @@ async function consturctServer(moduleDefs) {
         console.log(`[FNOS] ${summary}`);
         return { songInfo, coverBuffer, lyrics, quality, logs };
       } catch (e) {
-        logs.push(`获取元数据失败: ${e.message}，将下载无标签文件`);
-        logDownload(`WARN: 获取元数据失败 hash=${hash}: ${e.message}，将下载无标签文件`);
-        return { songInfo: null, coverBuffer: null, lyrics: null, quality, logs };
+        logs.push(`获取元数据失败: ${e.message}，元数据不可用`);
+        logDownload(`WARN: 获取元数据失败 hash=${hash}: ${e.message}，元数据不可用`);
+        return null;
       }
     };
 
@@ -460,7 +469,17 @@ async function consturctServer(moduleDefs) {
         audioData = original.subarray(10 + oldSize);
       }
 
-      fs.writeFileSync(filePath, Buffer.concat([id3Header, allFrames, audioData]));
+      // 原子写入：先写临时文件，再 rename 覆盖原文件，避免写入过程中崩溃导致原文件损坏
+      const newContent = Buffer.concat([id3Header, allFrames, audioData]);
+      const tmpPath = filePath + '.tmp-' + process.pid + '-' + Date.now();
+      fs.writeFileSync(tmpPath, newContent);
+      try {
+        fs.renameSync(tmpPath, filePath);
+      } catch (renameErr) {
+        // rename 失败时清理临时文件并抛错，原文件保持不变
+        try { fs.unlinkSync(tmpPath); } catch (__) {}
+        throw renameErr;
+      }
       return true;
     };
 
@@ -591,7 +610,17 @@ async function consturctServer(moduleDefs) {
       // 追加音频数据
       fileParts.push(buffer.subarray(audioStart));
 
-      fs.writeFileSync(filePath, Buffer.concat(fileParts));
+      // 原子写入：先写临时文件，再 rename 覆盖原文件，避免写入过程中崩溃导致原文件损坏
+      const newContent = Buffer.concat(fileParts);
+      const tmpPath = filePath + '.tmp-' + process.pid + '-' + Date.now();
+      fs.writeFileSync(tmpPath, newContent);
+      try {
+        fs.renameSync(tmpPath, filePath);
+      } catch (renameErr) {
+        // rename 失败时清理临时文件并抛错，原文件保持不变
+        try { fs.unlinkSync(tmpPath); } catch (__) {}
+        throw renameErr;
+      }
       return true;
     };
 
@@ -678,12 +707,33 @@ async function consturctServer(moduleDefs) {
       });
 
       logs.push('音频文件下载完成');
-      if (metadata && metadata.songInfo) {
+
+      // 元数据检查：metadata 为 null 表示获取失败，删除已下载文件并抛错（避免无标签文件残留）
+      if (!metadata) {
+        logs.push('元数据不可用，删除已下载文件以避免无标签文件残留');
+        logDownload(`ERROR: 元数据不可用，删除文件 ${filePath}`);
+        try { await fs.promises.unlink(filePath); } catch (__) {}
+        throw new Error('元数据获取失败，已删除无标签文件');
+      }
+
+      if (metadata.songInfo) {
         logs.push('开始嵌入元数据（标签/封面/歌词）...');
         const embedResult = await embedMetadataToFile(filePath, metadata.songInfo, metadata.coverBuffer, metadata.lyrics, metadata.quality);
         logs.push(...embedResult.logs);
-      } else if (metadata && !metadata.songInfo) {
-        logs.push('未获取到歌曲信息，跳过标签写入');
+
+        // 标签写入失败：删除已下载文件并抛错，避免无标签文件被标记为成功
+        if (!embedResult.success) {
+          const errMsg = `标签写入失败，删除已下载文件以避免无标签文件残留`;
+          logs.push(errMsg);
+          logDownload(`ERROR: 标签写入失败，删除文件 ${filePath}`);
+          try { await fs.promises.unlink(filePath); } catch (__) {}
+          throw new Error('标签写入失败，已删除文件');
+        }
+      } else {
+        logs.push('未获取到歌曲信息，删除已下载文件以避免无标签文件残留');
+        logDownload(`ERROR: songInfo 为空，删除文件 ${filePath}`);
+        try { await fs.promises.unlink(filePath); } catch (__) {}
+        throw new Error('歌曲信息不可用，已删除无标签文件');
       }
 
       const absPath = filePath;
@@ -710,6 +760,10 @@ async function consturctServer(moduleDefs) {
         let metadata = null;
         if (hash) {
           metadata = await fetchMetadataForSong(hash, quality || '320', authHeader, cookiesStr);
+          // 元数据获取失败：返回错误，让前端感知（避免下载无标签文件）
+          if (!metadata) {
+            return res.status(500).json({ code: 1, msg: '元数据获取失败，已跳过下载以避免无标签文件' });
+          }
         }
 
         const result = await downloadUrlToFile(url, fileName, artist, album, categorize, metadata);
@@ -885,9 +939,15 @@ async function consturctServer(moduleDefs) {
           // 等待元数据预取完成（通常此时已完成）
           const metadata = await metadataPromise;
 
+          // 元数据不可用：直接抛错，不下载文件（避免下载无标签文件）
+          // downloadUrlToFile 内部也会做同样的检查，但提前抛错可以节省下载带宽
+          if (!metadata) {
+            throw new Error('元数据获取失败，跳过下载以避免无标签文件');
+          }
+
           const result = await downloadUrlToFile(
             downloadUrl, fileName, folderArtist, task.song.album, true,
-            metadata ? { ...metadata, quality: q } : null
+            { ...metadata, quality: q }
           );
           allLogs.push(...(result.logs || []));
           return { ...result, quality: q, logs: allLogs };
