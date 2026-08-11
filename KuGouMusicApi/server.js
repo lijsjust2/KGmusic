@@ -965,6 +965,32 @@ async function consturctServer(moduleDefs) {
       }
     };
 
+    // 刷新批次 token：用 batch.authHeader 调本地 /login/token，成功后更新 batch.authHeader
+    // 解决飞牛批量下载耗时长导致 token 过期的问题
+    const refreshBatchToken = async (batch) => {
+      if (!batch.authHeader) return false;
+      const port = Number(process.env.PORT || '3000');
+      try {
+        const resp = await axios.get(`http://127.0.0.1:${port}/login/token`, {
+          params: {},
+          headers: { Authorization: batch.authHeader, Cookie: batch.cookiesStr || '' },
+          timeout: 15000,
+        });
+        const data = resp.data;
+        if (data?.status === 1 && data?.data?.token) {
+          // 更新 authHeader 中的 token
+          const newToken = data.data.token;
+          batch.authHeader = batch.authHeader.replace(/token=[^;]*/i, `token=${newToken}`);
+          logDownload(`token refresh 成功，新 token=${newToken.slice(0, 10)}...`);
+          return true;
+        }
+        logDownload(`token refresh 失败：${JSON.stringify(data).slice(0, 200)}`);
+      } catch (e) {
+        logDownload(`token refresh 异常: ${e.message}`);
+      }
+      return false;
+    };
+
     // 带音质降级的下载（flac → 320 → 128），并嵌入元数据，返回 logs
     const downloadTaskWithFallback = async (task, batch) => {
       let startIdx = QUALITY_FALLBACK_ORDER.indexOf(task.quality);
@@ -980,7 +1006,20 @@ async function consturctServer(moduleDefs) {
       for (let i = startIdx; i < QUALITY_FALLBACK_ORDER.length; i++) {
         const q = QUALITY_FALLBACK_ORDER[i];
         try {
-          const urlResp = await fetchSongUrl(task.song.hash, q, batch.authHeader, batch.cookiesStr);
+          let urlResp = await fetchSongUrl(task.song.hash, q, batch.authHeader, batch.cookiesStr);
+
+          // 检测登录失效（status==2）：token 过期，尝试 refresh 后重试一次
+          if (urlResp && urlResp.status === 2) {
+            logDownload(`检测到 status==2 登录失效，尝试 refresh token hash=${task.song.hash}`);
+            const refreshed = await refreshBatchToken(batch);
+            if (refreshed) {
+              logDownload('token refresh 成功，重试获取下载链接');
+              urlResp = await fetchSongUrl(task.song.hash, q, batch.authHeader, batch.cookiesStr);
+            } else {
+              logDownload('token refresh 失败，放弃此任务');
+            }
+          }
+
           if (!urlResp || urlResp.status !== 1 || !urlResp.url || !urlResp.url[0]) {
             throw new Error(`获取 ${q} 下载链接失败`);
           }

@@ -109,6 +109,10 @@ import { get } from '../utils/request';
 import { MoeAuthStore } from '../stores/store';
 import QualityModal from './QualityModal.vue';
 import { downloadWithMetadata } from '../utils/metadata';
+
+// token 预刷新：每下载 N 首歌主动 refresh 一次 token，避免批量下载耗时长导致 token 过期
+const TOKEN_REFRESH_INTERVAL = 5;
+let lastTokenRefreshAt = Date.now();
 import { 
     pickDownloadDirectory, 
     saveBlobToDirectory, 
@@ -456,11 +460,22 @@ const handleQualitySelect = async (quality) => {
             console.log('下载任务已被中断');
             break;
         }
-        
+
+        // token 预刷新：每 N 首歌或超过 20 分钟主动 refresh 一次，避免 token 过期导致下载完成后退出登录
+        if (MoeAuth.isAuthenticated && (i > 0 && i % TOKEN_REFRESH_INTERVAL === 0 || Date.now() - lastTokenRefreshAt > 20 * 60 * 1000)) {
+            try {
+                console.log('[BatchDownload] 预刷新 token，已完成', i, '首');
+                await MoeAuth.refreshToken();
+                lastTokenRefreshAt = Date.now();
+            } catch (e) {
+                console.warn('[BatchDownload] 预刷新 token 失败:', e?.message);
+            }
+        }
+
         currentIndex.value = i;
         const song = props.songs[i];
         currentSongName.value = song.name || song.originalData?.name || '未知歌曲';
-        
+
         try {
             await downloadSong(song, quality);
             downloadResults.value.success.push({

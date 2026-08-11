@@ -69,15 +69,11 @@ httpClient.interceptors.response.use(
 
                 if (MoeAuth.UserInfo?.token && MoeAuth.UserInfo?.userid) {
                     try {
-                        const refreshUrl = `${getApiBaseUrl()}/login/token`;
-                        const refreshResponse = await axios.get(refreshUrl, {
-                            params: { token: MoeAuth.UserInfo.token, userid: MoeAuth.UserInfo.userid },
-                            timeout: 10000,
-                        });
-                        const refreshData = refreshResponse.data;
-                        if (refreshData?.status === 1 && refreshData?.data?.token) {
-                            const updated = { ...MoeAuth.UserInfo, ...refreshData.data, token: refreshData.data.token };
-                            MoeAuth.UserInfo = updated;
+                        // 复用 MoeAuth.refreshToken()：它用 apiGet（httpClient），
+                        // 会带完整的 Authorization header（含 dfid、KUGOU_API_GUID/MAC/DEV 等），
+                        // login_token.js 在 lite 模式下需要这些参数生成 t2 加密
+                        const refreshed = await MoeAuth.refreshToken();
+                        if (refreshed) {
                             const retryConfig = { ...error.config, _retry: true };
                             return httpClient(retryConfig);
                         }
