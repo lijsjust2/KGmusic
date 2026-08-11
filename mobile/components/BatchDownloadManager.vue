@@ -579,9 +579,9 @@ const downloadSong = async (song, quality) => {
                 const album = songInfo.album || song.album || song.album_name || '未知专辑';
                 const songName = song.name || song.originalData?.name || '未知歌曲';
                 const ext = currentQuality === 'flac' ? 'flac' : 'mp3';
-                const fnosFileName = `${songName} - ${songArtist}.${ext}`;
-                // 一级文件夹歌手名：优先用 batchArtist（通过歌手ID查询的名字），确保同批下载统一
-                const folderArtist = props.batchArtist || songArtist;
+                // 严格用 batchArtist（通过歌手ID查询的名字）创建一级文件夹和文件名，不 fallback 到单曲元数据
+                const folderArtist = props.batchArtist || '未知歌手';
+                const fnosFileName = `${songName} - ${folderArtist}.${ext}`;
 
                 const fnosResult = await downloadToFnos(downloadUrl, fnosFileName, folderArtist, album, true, hash, currentQuality);
                 if (!fnosResult.success) {
@@ -611,9 +611,12 @@ const downloadSong = async (song, quality) => {
             const songInfo = result.songInfo || {};
             const songArtist = sanitizeFileName(songInfo.author || song.author || song.singer_name || '未知歌手');
             const album = sanitizeFileName(songInfo.album || song.album || song.album_name || '未知专辑');
-            // 一级文件夹歌手名：优先用 batchArtist（通过歌手ID查询的名字），确保同批下载统一
-            const artist = sanitizeFileName(props.batchArtist) || songArtist;
-            const safeFileName = sanitizeFileName(result.fileName);
+            // 严格用 batchArtist（通过歌手ID查询的名字）创建一级文件夹，不 fallback 到单曲元数据
+            const artist = sanitizeFileName(props.batchArtist || '未知歌手');
+            // 文件名也统一用 batchArtist，保持同批下载一致
+            const songName = songInfo.name || song.name || song.originalData?.name || '未知歌曲';
+            const ext = currentQuality === 'flac' ? 'flac' : 'mp3';
+            const safeFileName = sanitizeFileName(`${songName} - ${props.batchArtist || '未知歌手'}.${ext}`);
             
             // 主流程：File System Access API — 在用户选择的目录下创建 歌手/专辑 子文件夹
             if (useFileSystemAccess.value && downloadDirHandle.value) {

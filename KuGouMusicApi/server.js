@@ -878,13 +878,12 @@ async function consturctServer(moduleDefs) {
           }
           const downloadUrl = urlResp.url[0];
           const ext = q === 'flac' ? 'flac' : 'mp3';
-          const fileName = `${task.song.name} - ${task.song.author}.${ext}`;
+          // 严格用 batchArtist（通过歌手ID查询的名字）创建文件名，不 fallback 到单曲元数据
+          const folderArtist = batch.batchArtist || '未知歌手';
+          const fileName = `${task.song.name} - ${folderArtist}.${ext}`;
 
           // 等待元数据预取完成（通常此时已完成）
           const metadata = await metadataPromise;
-
-          // 一级文件夹歌手名：优先用 batchArtist（通过歌手ID查询的名字），确保同批下载统一
-          const folderArtist = batch.batchArtist || task.song.author;
 
           const result = await downloadUrlToFile(
             downloadUrl, fileName, folderArtist, task.song.album, true,
@@ -917,10 +916,8 @@ async function consturctServer(moduleDefs) {
       const successList = batchTasks.filter(t => t.status === 'success');
       const failedList = batchTasks.filter(t => t.status === 'failed');
 
-      // 确定艺术家名：优先用 batchArtist，否则取第一首歌的作者
-      const displayArtist = batch.batchArtist ||
-        (successList.length > 0 ? (successList[0].song.author || '') :
-          (batchTasks.length > 0 ? (batchTasks[0].song.author || '') : '未知艺术家'));
+      // 严格用 batchArtist（通过歌手ID查询的名字），不 fallback 到单曲元数据
+      const displayArtist = batch.batchArtist || '未知艺术家';
 
       const SONGS_PER_ROW = 5;
       const SEP = '    |    '; // 歌曲之间的分隔符

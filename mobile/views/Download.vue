@@ -909,7 +909,13 @@ const queryArtist = async () => {
         addLog('请输入歌手ID', 'warning', 'fas fa-exclamation-triangle');
         return;
     }
-    
+
+    // 确保歌手名已查询（防止用户未失焦或路由参数未触发查询的情况）
+    // 严格使用查询出的歌手名创建一级文件夹，不 fallback 到单曲元数据
+    if (!artistName.value) {
+        await handleBlurArtistId();
+    }
+
     querying.value = true;
     albums.value = [];
     selectedAlbums.value = new Set();
@@ -979,10 +985,12 @@ const queryArtist = async () => {
     }
 };
 
-// 监听路由参数变化，自动填入歌手ID（不自动查询，由用户手动点击）
+// 监听路由参数变化，自动填入歌手ID并获取歌手名（不自动查询专辑，由用户手动点击）
 watch(() => route.query.artistId, (newArtistId) => {
     if (newArtistId) {
         artistId.value = String(newArtistId);
+        // 自动获取歌手名，确保后续下载时 batchArtist 已填充，避免 fallback 到单曲元数据
+        handleBlurArtistId();
     }
 }, { immediate: true });
 
