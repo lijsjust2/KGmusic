@@ -191,11 +191,26 @@ async function consturctServer(moduleDefs) {
         ...(cookiesStr ? { Cookie: cookiesStr } : {}),
       };
 
+      // 带重试的 GET：网络抖动时重试 1 次，尽量避免因临时失败导致无标签
+      const getWithRetry = async (url, opts, label) => {
+        try {
+          return await axios.get(url, opts);
+        } catch (e) {
+          logDownload(`WARN: ${label} 首次失败，重试1次: ${e.message}`);
+          try {
+            return await axios.get(url, opts);
+          } catch (e2) {
+            logDownload(`WARN: ${label} 重试也失败: ${e2.message}`);
+            throw e2;
+          }
+        }
+      };
+
       try {
         // 1. 调用 /privilege/lite 获取基本信息
-        const privResp = await axios.get(`${base}/privilege/lite`, {
+        const privResp = await getWithRetry(`${base}/privilege/lite`, {
           params: { hash }, headers, timeout: 10000,
-        });
+        }, 'privilege/lite');
         if (privResp.data.status !== 1 || !privResp.data.data?.length) return null;
 
         const songData = privResp.data.data[0];
@@ -203,9 +218,9 @@ async function consturctServer(moduleDefs) {
 
         // 2. 如果有 album_audio_id，调用 /krm/audio 获取详细信息
         if (albumAudioId) {
-          const krmResp = await axios.get(`${base}/krm/audio`, {
+          const krmResp = await getWithRetry(`${base}/krm/audio`, {
             params: { album_audio_id: albumAudioId }, headers, timeout: 10000,
-          });
+          }, 'krm/audio');
           if (krmResp.data.status === 1 && krmResp.data.data?.length) {
             const ad = krmResp.data.data[0];
             const b = ad.base || {};
@@ -300,7 +315,8 @@ async function consturctServer(moduleDefs) {
     };
 
     // 统一获取元数据（歌曲信息 + 歌词 + 封面），返回 logs 数组供前端透传
-    // 返回 null 表示元数据获取失败，调用方应据此决定是否中止下载（避免下载无标签文件）
+    // 尽量获取所有字段：songInfo/lyrics/coverBuffer 任一失败不影响其它字段
+    // songInfo 为 null 时表示无法写入标签，但文件仍会下载（避免因标签失败而丢失音频）
     const fetchMetadataForSong = async (hash, quality, authHeader, cookiesStr) => {
       if (!hash) return null;
       const logs = [];
@@ -311,14 +327,6 @@ async function consturctServer(moduleDefs) {
           fetchLyricsServer(hash, authHeader, cookiesStr),
         ]);
 
-        // songInfo 为 null 表示歌曲信息获取失败，无法写入标签
-        // 返回 null 让调用方知道"元数据不可用"，避免下载无标签文件
-        if (!songInfo) {
-          logs.push('歌曲信息获取失败，元数据不可用');
-          logDownload(`WARN: 歌曲信息获取失败 hash=${hash}，元数据不可用`);
-          return null;
-        }
-
         let coverBuffer = null;
         if (songInfo?.cover) {
           coverBuffer = await fetchCoverBuffer(songInfo.cover);
@@ -327,11 +335,12 @@ async function consturctServer(moduleDefs) {
         const summary = `元数据获取完成: ${songInfo?.name || '未知'} - ${songInfo?.author || '未知'}, 歌词: ${lyrics ? '有' : '无'}, 封面: ${coverBuffer ? '有' : '无'}`;
         logs.push(summary);
         console.log(`[FNOS] ${summary}`);
+        // 即使 songInfo 为 null 也返回对象，保留已获取的 lyrics 等字段
         return { songInfo, coverBuffer, lyrics, quality, logs };
       } catch (e) {
-        logs.push(`获取元数据失败: ${e.message}，元数据不可用`);
-        logDownload(`WARN: 获取元数据失败 hash=${hash}: ${e.message}，元数据不可用`);
-        return null;
+        logs.push(`获取元数据失败: ${e.message}，将下载无标签文件`);
+        logDownload(`WARN: 获取元数据失败 hash=${hash}: ${e.message}，将下载无标签文件`);
+        return { songInfo: null, coverBuffer: null, lyrics: null, quality, logs };
       }
     };
 
@@ -708,32 +717,20 @@ async function consturctServer(moduleDefs) {
 
       logs.push('音频文件下载完成');
 
-      // 元数据检查：metadata 为 null 表示获取失败，删除已下载文件并抛错（避免无标签文件残留）
-      if (!metadata) {
-        logs.push('元数据不可用，删除已下载文件以避免无标签文件残留');
-        logDownload(`ERROR: 元数据不可用，删除文件 ${filePath}`);
-        try { await fs.promises.unlink(filePath); } catch (__) {}
-        throw new Error('元数据获取失败，已删除无标签文件');
-      }
-
-      if (metadata.songInfo) {
+      // 尽量写入标签：有 songInfo 就写，缺失字段（封面/歌词/track等）会跳过对应帧但写其它字段
+      // 即使完全无 songInfo 或标签写入失败，文件仍然保留（避免因标签问题丢失音频）
+      if (metadata && metadata.songInfo) {
         logs.push('开始嵌入元数据（标签/封面/歌词）...');
         const embedResult = await embedMetadataToFile(filePath, metadata.songInfo, metadata.coverBuffer, metadata.lyrics, metadata.quality);
         logs.push(...embedResult.logs);
-
-        // 标签写入失败：删除已下载文件并抛错，避免无标签文件被标记为成功
         if (!embedResult.success) {
-          const errMsg = `标签写入失败，删除已下载文件以避免无标签文件残留`;
-          logs.push(errMsg);
-          logDownload(`ERROR: 标签写入失败，删除文件 ${filePath}`);
-          try { await fs.promises.unlink(filePath); } catch (__) {}
-          throw new Error('标签写入失败，已删除文件');
+          // 标签写入失败：保留文件，记录警告（用户更关心音频文件本身）
+          logs.push('警告: 标签写入失败，文件已保留但可能缺少标签');
+          logDownload(`WARN: 标签写入失败，文件已保留 ${filePath}`);
         }
-      } else {
-        logs.push('未获取到歌曲信息，删除已下载文件以避免无标签文件残留');
-        logDownload(`ERROR: songInfo 为空，删除文件 ${filePath}`);
-        try { await fs.promises.unlink(filePath); } catch (__) {}
-        throw new Error('歌曲信息不可用，已删除无标签文件');
+      } else if (metadata && !metadata.songInfo) {
+        logs.push('未获取到歌曲信息，跳过标签写入（文件仍会保留）');
+        logDownload(`WARN: 无 songInfo，跳过标签写入 ${filePath}`);
       }
 
       const absPath = filePath;
@@ -760,10 +757,7 @@ async function consturctServer(moduleDefs) {
         let metadata = null;
         if (hash) {
           metadata = await fetchMetadataForSong(hash, quality || '320', authHeader, cookiesStr);
-          // 元数据获取失败：返回错误，让前端感知（避免下载无标签文件）
-          if (!metadata) {
-            return res.status(500).json({ code: 1, msg: '元数据获取失败，已跳过下载以避免无标签文件' });
-          }
+          // metadata 可能返回 null 或 songInfo 为 null，但仍然下载文件（标签失败不阻塞下载）
         }
 
         const result = await downloadUrlToFile(url, fileName, artist, album, categorize, metadata);
@@ -939,15 +933,11 @@ async function consturctServer(moduleDefs) {
           // 等待元数据预取完成（通常此时已完成）
           const metadata = await metadataPromise;
 
-          // 元数据不可用：直接抛错，不下载文件（避免下载无标签文件）
-          // downloadUrlToFile 内部也会做同样的检查，但提前抛错可以节省下载带宽
-          if (!metadata) {
-            throw new Error('元数据获取失败，跳过下载以避免无标签文件');
-          }
-
+          // 标签失败也下载文件：metadata 可能为 null 或 songInfo 为 null，但音频文件仍需保留
+          // downloadUrlToFile 内部会处理 metadata 为 null 的情况（跳过标签写入但保留文件）
           const result = await downloadUrlToFile(
             downloadUrl, fileName, folderArtist, task.song.album, true,
-            { ...metadata, quality: q }
+            metadata ? { ...metadata, quality: q } : null
           );
           allLogs.push(...(result.logs || []));
           return { ...result, quality: q, logs: allLogs };
