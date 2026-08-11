@@ -1,0 +1,23 @@
+{
+  "docker-project": {
+    "projects": [
+      {
+        "name": "kgmusic",
+        "path": "docker"
+      }
+    ]
+  },
+  "data-share": {
+    "shares": [
+      {
+        "name": "KGmusic"
+      },
+      {
+        "name": "KGmusic/downloads"
+      }
+    ]
+  },
+  "api-scope": [
+    "trim.file.sharedAccess"
+  ]
+}

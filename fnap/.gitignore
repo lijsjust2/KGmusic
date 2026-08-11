@@ -1,0 +1,7 @@
+# 构建生成的图标文件（由 generate-icons.sh 生成）
+ICON.PNG
+ICON_256.PNG
+app/ui/images/
+
+# 构建产物
+*.fpk

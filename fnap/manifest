@@ -1,0 +1,20 @@
+appname               = KGmusic
+version               = 0.0.1
+display_name          = KGmusic
+desc                  = KGmusic基于酷狗概念版接口开发，支持在线试听与歌曲下载（需要VIP）。开通VIP 只需在「我的」页面完成签到即可。飞牛环境下下载的歌曲自动保存至共享目录，需修改下载路径时，请先停止 Docker 镜像后在应用设置中调整。
+platform              = all
+source                = thirdparty
+maintainer            = lijsfun
+maintainer_url        = https://github.com/lijsjust2/KGmusic
+distributor           = lijsfun
+
+os_min_version        = 1.2.0
+
+desktop_uidir         = ui
+desktop_applaunchname = KGmusic.Application
+
+ctl_stop              = true
+micro_app             = true
+disable_authorization_path = false
+
+changelog             = 初始飞牛 fnOS 版本，支持应用内下载歌曲到飞牛共享目录。

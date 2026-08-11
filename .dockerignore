@@ -1,0 +1,68 @@
+# Dependencies
+node_modules
+npm-debug.log
+yarn-error.log
+yarn-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# API dependencies (will be installed at runtime)
+KuGouMusicApi/node_modules
+KuGouMusicApi/package-lock.json
+KuGouMusicApi/pnpm-lock.yaml
+
+# Build outputs
+dist
+build
+dev-dist
+electron
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+# .github
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+README.md
+LICENSE
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+
+# Lock files
+# package-lock.json
+# pnpm-lock.yaml
+
+# Test
+coverage
+.nyc_output
+
+# Misc
+*.log
+.env
+
+# API docs and tests
+KuGouMusicApi/docs
+KuGouMusicApi/test
+KuGouMusicApi/.gitignore
+KuGouMusicApi/.prettierrc.json
+KuGouMusicApi/tsconfig.json
+KuGouMusicApi/nodemon.json
+KuGouMusicApi/vercel.json
+KuGouMusicApi/Dockerfile
+KuGouMusicApi/.dockerignore

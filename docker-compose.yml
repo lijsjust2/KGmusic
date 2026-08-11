@@ -1,0 +1,10 @@
+services:
+  kgmusic:
+    container_name: kgmusic # 容器名
+    restart: unless-stopped # 自动重启
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports: # 端口映射
+      - "8880:8880"  # 移动端服务
+      - "6521:6521"  # 接口服务

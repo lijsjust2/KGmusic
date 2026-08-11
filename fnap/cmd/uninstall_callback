@@ -1,0 +1,5 @@
+#!/bin/bash
+
+### This script is called after the application is uninstalled.
+
+exit 0

@@ -1,0 +1,13 @@
+services:
+  kgmusic:
+    image: lijsfun/kgmusic:latest
+    container_name: kgmusic
+    ports:
+      - "8880:8880"
+    volumes:
+      # data-share 声明的共享目录: KGmusic/downloads
+      # 飞牛自动创建路径: /var/apps/{appname}/shares/{share_name}
+      - "/var/apps/KGmusic/shares/KGmusic/downloads:/app/downloads"
+    environment:
+      - FNOS_ENV=true
+      - DOWNLOAD_DIR=/app/downloads

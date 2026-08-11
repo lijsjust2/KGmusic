@@ -1,0 +1,24 @@
+{
+  "name": "kgmusic",
+  "version": "0.0.1",
+  "homepage": "https://github.com/lijsjust2/KGmusic",
+  "scripts": {
+    "install-all": "cd KuGouMusicApi && npm install && cd ../mobile && npm install",
+    "api": "node KuGouMusicApi/app.js --platform=lite --port=6521",
+    "mobile": "cd mobile && npm run dev",
+    "mobile:install": "cd mobile && npm install",
+    "build:api:win": "npm run --prefix ./KuGouMusicApi pkgwin",
+    "build:api:linux": "npm run --prefix ./KuGouMusicApi pkglinux",
+    "build:api:linux-aarch64": "npm run --prefix ./KuGouMusicApi pkglinux-aarch64",
+    "build:api:macos": "npm run --prefix ./KuGouMusicApi pkgmacos"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "type": "module",
+  "author": {
+    "name": "lijsfun"
+  },
+  "license": "MIT",
+  "description": "KGmusic 酷狗音乐移动端"
+}

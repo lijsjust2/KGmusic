@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# KGmusic 应用运行控制脚本
+# Docker 应用：容器由飞牛 appcenter 通过 config/resource 的 docker-project 声明自动管理，
+# cmd/main 的 start/stop 不做任何事，status 通过 docker inspect 查询容器运行状态。
+# 参考官方 Docker 模板: fnpack create <app> --template docker
+
+FILE_PATH="${TRIM_APPDEST}/docker/docker-compose.yaml"
+
+is_docker_running () {
+    DOCKER_NAME=""
+
+    if [ -f "$FILE_PATH" ]; then
+        DOCKER_NAME=$(cat "$FILE_PATH" | grep "container_name" | awk -F ':' '{print $2}' | xargs)
+        echo "DOCKER_NAME is set to: $DOCKER_NAME"
+    fi
+
+    if [ -n "$DOCKER_NAME" ]; then
+        docker inspect "$DOCKER_NAME" 2>/dev/null | grep -q "\"Status\": \"running\"," && return 0
+        return 1
+    fi
+    return 1
+}
+
+case $1 in
+start)
+    # Docker 应用由飞牛 appcenter 自动启动，这里不做任何事
+    exit 0
+    ;;
+stop)
+    # Docker 应用由飞牛 appcenter 自动停止，这里不做任何事
+    exit 0
+    ;;
+status)
+    # 通过 docker inspect 查容器状态
+    if is_docker_running; then
+        exit 0
+    else
+        exit 3
+    fi
+    ;;
+*)
+    exit 1
+    ;;
+esac

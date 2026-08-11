@@ -1,0 +1,6 @@
+#!/bin/bash
+
+### This script is called before the user installs the application.
+### Docker 应用由飞牛 appcenter 自动管理镜像拉取和容器启动，这里不做任何事。
+
+exit 0
