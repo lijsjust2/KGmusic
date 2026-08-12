@@ -99,6 +99,29 @@
                         <input type="checkbox" v-model="excludeInstrumental" />
                         <span>排除纯音乐（名称含"纯音乐 / 伴奏 / 独奏 / Accompaniment / Instrumental"的歌曲）</span>
                     </div>
+                    <div class="simple-check">
+                        <input type="checkbox" v-model="excludeDJ" />
+                        <span>排除 DJ/舞曲版（名称含"DJ / 舞曲 / Club Mix / Dance Mix"的歌曲）</span>
+                    </div>
+                    <div class="simple-check">
+                        <input type="checkbox" v-model="excludeRemix" />
+                        <span>排除 Remix 混音版（名称含"Remix / 混音 / Rework / Re-Edit"的歌曲）</span>
+                    </div>
+                    <div class="simple-check">
+                        <input type="checkbox" v-model="excludeClip" />
+                        <span>排除铃声/剪辑版（名称含"铃声/剪辑/片段/Preview"，或时长 &lt; 60 秒）</span>
+                    </div>
+                    <div class="simple-check custom-keyword-check">
+                        <input type="checkbox" v-model="excludeCustomKeywords" />
+                        <span>排除自定义关键词：</span>
+                        <input
+                            type="text"
+                            v-model="customKeywords"
+                            placeholder="多个关键词用逗号分隔，如：英文版,粤语版,Demo"
+                            class="custom-keyword-input"
+                            :disabled="!excludeCustomKeywords"
+                        />
+                    </div>
                 </div>
             </div>
 
@@ -450,6 +473,11 @@ watch(excludeLive, (v) => localStorage.setItem('download_exclude_live', String(v
 watch(excludeNoCompany, (v) => localStorage.setItem('download_exclude_no_company', String(v)));
 watch(excludeDuplicate, (v) => localStorage.setItem('download_exclude_duplicate', String(v)));
 watch(excludeInstrumental, (v) => localStorage.setItem('download_exclude_instrumental', String(v)));
+watch(excludeDJ, (v) => localStorage.setItem('download_exclude_dj', String(v)));
+watch(excludeRemix, (v) => localStorage.setItem('download_exclude_remix', String(v)));
+watch(excludeClip, (v) => localStorage.setItem('download_exclude_clip', String(v)));
+watch(excludeCustomKeywords, (v) => localStorage.setItem('download_exclude_custom_keywords', String(v)));
+watch(customKeywords, (v) => localStorage.setItem('download_custom_keywords', v || ''));
 watch(dateFrom, (v) => localStorage.setItem('download_date_from', v || ''));
 watch(dateTo, (v) => localStorage.setItem('download_date_to', v || ''));
 
@@ -523,7 +551,7 @@ const _selectedSongListInternal = computed(() => {
         const albumSongs = map.get(key);
         if (!albumSongs) continue;
 
-        const filtered = albumSongs.filter(song => !shouldExclude(song.name, song.albumName));
+        const filtered = albumSongs.filter(song => !shouldExclude(song));
 
         if (excludeDuplicate.value) {
             for (const song of filtered) {
@@ -608,22 +636,62 @@ const formatDuration = (seconds) => {
 };
 
 // 检查是否应该排除（歌曲级别，用于后续下载时二次过滤）
-const shouldExclude = (songName, albumName) => {
-    const name = (songName || '').toLowerCase();
-    const album = (albumName || '').toLowerCase();
-    
+// 接收 song 对象：{ name, albumName, duration, ... }
+const shouldExclude = (song) => {
+    const name = (String(song?.name || '')).toLowerCase();
+    const album = (String(song?.albumName || '')).toLowerCase();
+
     if (excludeConcert.value && (name.includes('演唱会') || album.includes('演唱会'))) {
         return true;
     }
-    
+
     if (excludeLive.value && (name.includes('live') || album.includes('live'))) {
         return true;
     }
 
-    // 排除纯音乐/伴奏/独奏（按歌曲名和专辑名判断，大小写不敏感）
+    // 排除纯音乐/伴奏/独奏
     if (excludeInstrumental.value) {
         const instrumentalKeywords = ['纯音乐', '伴奏', '独奏', 'accompaniment', 'instrumental', 'instrumental version', 'karaoke'];
         if (instrumentalKeywords.some(kw => name.includes(kw) || album.includes(kw))) {
+            return true;
+        }
+    }
+
+    // 排除 DJ/舞曲版
+    if (excludeDJ.value) {
+        const djKeywords = ['dj版', 'dj remix', 'dj extended', '舞曲版', 'club mix', 'dance mix', 'dj'];
+        if (djKeywords.some(kw => name.includes(kw) || album.includes(kw))) {
+            return true;
+        }
+    }
+
+    // 排除 Remix/混音版
+    if (excludeRemix.value) {
+        const remixKeywords = ['remix', '混音', 'rework', 're-edit'];
+        if (remixKeywords.some(kw => name.includes(kw) || album.includes(kw))) {
+            return true;
+        }
+    }
+
+    // 排除铃声/剪辑版（关键词命中 或 时长 < 60 秒）
+    if (excludeClip.value) {
+        const clipKeywords = ['铃声', '剪辑', '片段', 'preview', '试听'];
+        if (clipKeywords.some(kw => name.includes(kw) || album.includes(kw))) {
+            return true;
+        }
+        const dur = Number(song?.duration || 0);
+        if (dur > 0 && dur < 60) {
+            return true;
+        }
+    }
+
+    // 排除自定义关键词（逗号分隔，大小写不敏感）
+    if (excludeCustomKeywords.value && customKeywords.value.trim()) {
+        const userKeywords = customKeywords.value
+            .split(/[,，]/)
+            .map(k => k.trim().toLowerCase())
+            .filter(Boolean);
+        if (userKeywords.some(kw => name.includes(kw) || album.includes(kw))) {
             return true;
         }
     }
@@ -1043,7 +1111,7 @@ const loadAlbumSongsInBackground = async (rawAlbums) => {
             const albumSongs = await fetchAlbumSongs(album.album_id, album.album_name, album.publish_date || album.publish_time || '');
             
             // 应用过滤规则（排除Live、演唱会等）
-            const filteredSongs = albumSongs.filter(song => !shouldExclude(song.name, song.albumName));
+            const filteredSongs = albumSongs.filter(song => !shouldExclude(song));
             const removedCount = albumSongs.length - filteredSongs.length;
             
             const albumKey = String(album.album_id);
@@ -1636,6 +1704,34 @@ const handleDownloadComplete = async (result) => {
 
 .simple-check span {
     color: rgba(255, 255, 255, 0.85);
+}
+
+/* 自定义关键词排除行 */
+.custom-keyword-check {
+    flex-wrap: wrap;
+}
+.custom-keyword-input {
+    flex: 1;
+    min-width: 180px;
+    padding: 6px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.2s;
+}
+.custom-keyword-input::placeholder {
+    color: rgba(255, 255, 255, 0.4);
+}
+.custom-keyword-input:focus {
+    border-color: #667eea;
+    background: rgba(255, 255, 255, 0.15);
+}
+.custom-keyword-input:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
 
 /* ====== 移动端适配 ====== */
