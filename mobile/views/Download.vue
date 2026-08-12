@@ -95,6 +95,10 @@
                         <input type="checkbox" v-model="excludeDuplicate" />
                         <span>排除重复歌曲（按照歌曲名排重，同一首歌只下载一次，优先保留最新发布专辑中的版本）</span>
                     </div>
+                    <div class="simple-check">
+                        <input type="checkbox" v-model="excludeInstrumental" />
+                        <span>排除纯音乐（名称含"纯音乐 / 伴奏 / 独奏 / Accompaniment / Instrumental"的歌曲）</span>
+                    </div>
                 </div>
             </div>
 
@@ -403,6 +407,7 @@ const excludeConcert = ref(localStorage.getItem('download_exclude_concert') !== 
 const excludeLive = ref(localStorage.getItem('download_exclude_live') !== 'false');
 const excludeNoCompany = ref(localStorage.getItem('download_exclude_no_company') !== 'false');
 const excludeDuplicate = ref(localStorage.getItem('download_exclude_duplicate') !== 'false');
+const excludeInstrumental = ref(localStorage.getItem('download_exclude_instrumental') !== 'false');
 const dateFrom = ref(localStorage.getItem('download_date_from') || '');
 const dateTo = ref(localStorage.getItem('download_date_to') || '');
 const querying = ref(false);
@@ -444,6 +449,7 @@ watch(excludeConcert, (v) => localStorage.setItem('download_exclude_concert', St
 watch(excludeLive, (v) => localStorage.setItem('download_exclude_live', String(v)));
 watch(excludeNoCompany, (v) => localStorage.setItem('download_exclude_no_company', String(v)));
 watch(excludeDuplicate, (v) => localStorage.setItem('download_exclude_duplicate', String(v)));
+watch(excludeInstrumental, (v) => localStorage.setItem('download_exclude_instrumental', String(v)));
 watch(dateFrom, (v) => localStorage.setItem('download_date_from', v || ''));
 watch(dateTo, (v) => localStorage.setItem('download_date_to', v || ''));
 
@@ -613,7 +619,15 @@ const shouldExclude = (songName, albumName) => {
     if (excludeLive.value && (name.includes('live') || album.includes('live'))) {
         return true;
     }
-    
+
+    // 排除纯音乐/伴奏/独奏（按歌曲名和专辑名判断，大小写不敏感）
+    if (excludeInstrumental.value) {
+        const instrumentalKeywords = ['纯音乐', '伴奏', '独奏', 'accompaniment', 'instrumental', 'instrumental version', 'karaoke'];
+        if (instrumentalKeywords.some(kw => name.includes(kw) || album.includes(kw))) {
+            return true;
+        }
+    }
+
     return false;
 };
 
