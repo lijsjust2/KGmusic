@@ -2,6 +2,7 @@
 import axios from 'axios';
 import { MoeAuthStore } from '../stores/store';
 import { getApiBaseUrl } from './apiBaseUrl';
+import { detectFnosClientMode } from './fnos';
 import message from './message';
 
 // 创建一个 axios 实例
@@ -15,8 +16,20 @@ const httpClient = axios.create({
 });
 
 // 请求拦截器
+// 两种模式：
+//  - 飞牛模式（.fpk 内嵌入口）：不拼 Authorization，加 X-FNOS-Mode: 1 标记
+//                   后端中间层读 .kugou_auth.json 注入共享 cookie，保证所有飞牛端完全一致
+//  - 浏览器直连：按原有逻辑拼 Authorization（token/userid/dfid/mid/guid 等），localStorage 独立
 httpClient.interceptors.request.use(
     config => {
+        if (detectFnosClientMode()) {
+            config.headers = {
+                ...config.headers,
+                'X-FNOS-Mode': '1',
+            };
+            return config;
+        }
+
         const MoeAuth = MoeAuthStore();
         const token = MoeAuth.UserInfo?.token;
         const userid = MoeAuth.UserInfo?.userid;

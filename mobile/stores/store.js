@@ -82,12 +82,13 @@ export const MoeAuthStore = defineStore('MoeData', {
             }
         },
         // 从后端拉取共享 token（启动时调用）
+        // 飞牛模式：调 /auth/status（同时返回 isSharedAuth 标识），拿到 token+device
+        // 浏览器直连：返回 null，登录态完全由 localStorage 管理
         async fetchTokenFromServer() {
-            // 仅飞牛环境从后端拉取共享 token；浏览器直连返回 null，用本地登录态
             if (!detectFnosClientMode()) return null;
             try {
-                const res = await apiGet('/auth/get');
-                if (res?.status === 1 && res?.data?.userInfo?.token) {
+                const res = await apiGet('/auth/status');
+                if (res?.status === 1 && res?.isSharedAuth && res?.data?.userInfo?.token) {
                     return res.data;
                 }
             } catch (e) {

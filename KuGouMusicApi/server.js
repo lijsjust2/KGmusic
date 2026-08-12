@@ -74,7 +74,7 @@ async function consturctServer(moduleDefs) {
       res.set({
         'Access-Control-Allow-Credentials': true,
         'Access-Control-Allow-Origin': CORS_ALLOW_ORIGIN || req.headers.origin || '*',
-        'Access-Control-Allow-Headers': 'Authorization,X-Requested-With,Content-Type,Cache-Control',
+        'Access-Control-Allow-Headers': 'Authorization,X-Requested-With,Content-Type,Cache-Control,X-FNOS-Mode',
         'Access-Control-Allow-Methods': 'PUT,POST,GET,DELETE,OPTIONS',
         'Content-Type': 'application/json; charset=utf-8',
       });
@@ -169,6 +169,49 @@ async function consturctServer(moduleDefs) {
   const clearStoredAuth = () => {
     try { fs.unlinkSync(AUTH_FILE); } catch {}
   };
+
+  // ========== 飞牛中间层：将后端集中存储的 auth 注入请求 ==========
+  // 检测当前请求是否为飞牛客户端模式（前端发的 X-FNOS-Mode: 1 标记）
+  const isFnosRequest = (req) => (req.headers['x-fnos-mode'] || '') === '1';
+
+  // 把 storedAuth 拼成前端原来的 Authorization header 字符串，直接复用 cookieToJson 反解析流程
+  const buildAuthHeaderFromStored = (stored) => {
+    if (!stored) return '';
+    const parts = [];
+    const ui = stored.userInfo || {};
+    if (ui.token) parts.push(`token=${ui.token}`);
+    if (ui.userid) parts.push(`userid=${ui.userid}`);
+    if (ui.t1) parts.push(`t1=${ui.t1}`);
+    const dv = stored.device || {};
+    if (dv.dfid) parts.push(`dfid=${dv.dfid}`);
+    if (dv.mid) parts.push(`KUGOU_API_MID=${dv.mid}`);
+    if (dv.guid) parts.push(`KUGOU_API_GUID=${dv.guid}`);
+    if (dv.serverDev) parts.push(`KUGOU_API_DEV=${dv.serverDev}`);
+    if (dv.mac) parts.push(`KUGOU_API_MAC=${dv.mac}`);
+    return parts.join(';');
+  };
+
+  // 飞牛中间件：检测到飞牛请求时，用后端共享 cookie 覆盖前端传的 Authorization
+  // 保证所有飞牛端走同一套 token+device，酷狗返回数据完全一致
+  app.use((req, res, next) => {
+    if (!isFnosRequest(req)) return next();
+    const stored = loadStoredAuth();
+    const builtHeader = buildAuthHeaderFromStored(stored);
+    if (builtHeader) {
+      req.headers['authorization'] = builtHeader;
+      // 把 device 也注入到 req.cookies，方便模块中 query.cookie = req.cookies + cookie(authHeader 解析) 时自动带上
+      const dv = stored?.device || {};
+      if (dv.dfid) req.cookies['dfid'] = dv.dfid;
+      if (dv.mid) req.cookies['KUGOU_API_MID'] = dv.mid;
+      if (dv.guid) req.cookies['KUGOU_API_GUID'] = dv.guid;
+      if (dv.serverDev) req.cookies['KUGOU_API_DEV'] = dv.serverDev;
+      if (dv.mac) req.cookies['KUGOU_API_MAC'] = dv.mac;
+    } else {
+      // 后端没有登录态，删掉前端可能乱传的 Authorization，避免旧 token 污染
+      delete req.headers['authorization'];
+    }
+    next();
+  });
 
   // ========== 酷狗风控 dfid 注册（全局，飞牛与非飞牛环境共用）==========
   // 根因：/song/url 接口必须携带通过 /register/dev 注册的真实 dfid
@@ -333,14 +376,32 @@ async function consturctServer(moduleDefs) {
   });
 
   // ========== 后端集中管理登录态接口 ==========
-  // GET /auth/get：获取后端存储的 token（所有设备共享）
+  // GET /auth/status：飞牛前端启动时拉当前共享登录态（含 token/userInfo/device）
+  // 浏览器请求：返回 isSharedAuth=false，前端走自己 localStorage
+  app.get('/auth/status', (req, res) => {
+    const fnos = isFnosRequest(req);
+    if (!fnos) {
+      return res.json({ status: 1, data: null, isSharedAuth: false });
+    }
+    const stored = loadStoredAuth();
+    res.json({
+      status: 1,
+      isSharedAuth: true,
+      data: stored?.userInfo?.token ? stored : null,
+    });
+  });
+
+  // GET /auth/get：旧接口（兼容旧前端），获取后端存储的 token
   app.get('/auth/get', (req, res) => {
     const auth = loadStoredAuth();
     res.json({ status: 1, data: auth });
   });
 
-  // POST /auth/save：登录成功后存储 token 到后端（所有设备共享）
+  // POST /auth/save：登录成功后存储 token 到后端（仅飞牛请求允许保存，浏览器禁止写共享态）
   app.post('/auth/save', (req, res) => {
+    if (!isFnosRequest(req)) {
+      return res.json({ status: 0, msg: '仅飞牛客户端允许保存共享 token' });
+    }
     const { userInfo, device } = req.body || {};
     if (!userInfo?.token) {
       return res.json({ status: 0, msg: '缺少 token' });
@@ -349,8 +410,11 @@ async function consturctServer(moduleDefs) {
     res.json({ status: 1, msg: 'ok' });
   });
 
-  // POST /auth/clear：退出登录时清空后端存储
+  // POST /auth/clear：退出登录时清空后端存储（仅飞牛请求允许）
   app.post('/auth/clear', (req, res) => {
+    if (!isFnosRequest(req)) {
+      return res.json({ status: 0, msg: '仅飞牛客户端允许清空共享 token' });
+    }
     clearStoredAuth();
     res.json({ status: 1, msg: 'ok' });
   });
@@ -1566,10 +1630,12 @@ async function consturctServer(moduleDefs) {
       }
 
       try {
-        // 模块调用包装：检测 20028 风控后强制刷新 dfid 重试一次（最多 1 次）
-        // 区分 status==2（登录失效）：换 dfid 无用，直接返回让前端处理
+        // 模块调用包装：
+        //  - 飞牛模式 status==2：后端自动 refresh token → 更新共享文件 → 用新 cookie 重试 1 次
+        //  - 20028 风控：强制刷新 dfid 重试 1 次
         const MAX_DFID_RETRY = 1;
         let attempt = 0;
+        let tokenRefreshed = false;
         let moduleResponse;
         while (true) {
           try {
@@ -1587,8 +1653,39 @@ async function consturctServer(moduleDefs) {
           }
 
           const body = moduleResponse?.body;
-          // 登录失效（status==2）：换 dfid 无用，直接返回让前端重新登录
+          // 登录失效（status==2）
           if (isLoginExpired(body)) {
+            // 飞牛模式 + 有共享 token + 还没 refresh 过：后端自己调 /login/token 刷新一次再重试
+            const fnosReq = isFnosRequest(req);
+            const stored = fnosReq ? loadStoredAuth() : null;
+            if (fnosReq && stored?.userInfo?.token && stored?.userInfo?.userid && !tokenRefreshed) {
+              tokenRefreshed = true;
+              try {
+                const port = Number(process.env.PORT || '3000');
+                const authHeader = buildAuthHeaderFromStored(stored);
+                const refreshResp = await axios.get(`http://127.0.0.1:${port}/login/token`, {
+                  params: {},
+                  headers: { Authorization: authHeader },
+                  timeout: 15000,
+                });
+                const data = refreshResp.data;
+                if (data?.status === 1 && data?.data?.token) {
+                  const newToken = data.data.token;
+                  // 更新共享存储
+                  stored.userInfo = { ...stored.userInfo, ...data.data, token: newToken };
+                  stored.savedAt = Date.now();
+                  saveStoredAuth(stored);
+                  // 更新 query.cookie 中的 token/userid（走之前 cookieToJson 流程，已经在 query.cookie 里的字段直接覆盖）
+                  query.cookie.token = newToken;
+                  if (data.data.userid) query.cookie.userid = data.data.userid;
+                  console.log('[LOGIN_REFRESH] 飞牛中间层自动刷新 token 成功，重试', decode(req.originalUrl));
+                  continue; // 重试 module
+                }
+                console.log('[LOGIN_REFRESH] 飞牛刷新 token 返回非 status=1，判定登录真正失效:', JSON.stringify(data).slice(0, 200));
+              } catch (refreshErr) {
+                console.log('[LOGIN_REFRESH] 飞牛刷新 token 异常，视为登录失效:', refreshErr?.message);
+              }
+            }
             console.log('[LOGIN_EXPIRED]', decode(req.originalUrl));
             break;
           }
