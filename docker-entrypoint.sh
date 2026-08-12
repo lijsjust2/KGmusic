@@ -6,9 +6,11 @@ echo "DOWNLOAD_DIR=$DOWNLOAD_DIR"
 
 # Ensure download directory exists (fnOS shared folder mount point)
 mkdir -p /app/downloads
+# Ensure internal data directory exists (logs, auth — not visible to users)
+mkdir -p /app/data
 
 # Diagnose mount point: is it really a mounted shared folder?
-MOUNT_LOG="/app/downloads/.mount_diagnose.log"
+MOUNT_LOG="/app/data/.mount_diagnose.log"
 {
   echo "==== $(date) ===="
   echo "FNOS_ENV=$FNOS_ENV"

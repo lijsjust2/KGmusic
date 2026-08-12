@@ -141,11 +141,13 @@ async function consturctServer(moduleDefs) {
   // ==================== 飞牛 fnOS 环境接口 ====================
   const FNOS_ENV = process.env.FNOS_ENV === 'true';
   const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || '';
+  // 内部数据目录（日志、auth 等），与用户可见的 downloads 目录隔离
+  const APP_DATA_DIR = process.env.APP_DATA_DIR || '/app/data';
 
   // ========== 后端集中管理登录态（单用户，全局共享一个 token）==========
   // 解决多设备互踢：所有设备共用同一个酷狗 token，后端统一存储和刷新
-  // token 文件放在 DOWNLOAD_DIR（已持久化挂载），容器重启不丢失
-  const AUTH_FILE = path.join(DOWNLOAD_DIR || '/tmp', '.kugou_auth.json');
+  // token 文件放在 APP_DATA_DIR（独立持久化挂载），容器重启不丢失
+  const AUTH_FILE = path.join(APP_DATA_DIR, '.kugou_auth.json');
 
   const loadStoredAuth = () => {
     try {
@@ -230,13 +232,11 @@ async function consturctServer(moduleDefs) {
     lastFailAt: 0,       // 最近一次失败时间
   };
 
-  // dfid 日志：有 DOWNLOAD_DIR 时落盘到 .download.log，否则只走 console
+  // dfid 日志：落盘到 APP_DATA_DIR/.download.log，同时输出到 console
   const logDfid = (msg) => {
     const ts = new Date().toISOString();
     console.log(`[DFID] ${msg}`);
-    if (DOWNLOAD_DIR) {
-      fs.promises.appendFile(path.join(DOWNLOAD_DIR, '.download.log'), `[${ts}] ${msg}\n`).catch(() => {});
-    }
+    fs.promises.appendFile(path.join(APP_DATA_DIR, '.download.log'), `[${ts}] ${msg}\n`).catch(() => {});
   };
 
   /**
@@ -431,7 +431,7 @@ async function consturctServer(moduleDefs) {
     const logDownload = (msg) => {
       const ts = new Date().toISOString();
       const line = `[${ts}] ${msg}\n`;
-      fs.promises.appendFile(path.join(DOWNLOAD_DIR, '.download.log'), line).catch(() => {});
+      fs.promises.appendFile(path.join(APP_DATA_DIR, '.download.log'), line).catch(() => {});
     };
 
     // 确保 DOWNLOAD_DIR 可写（首次写入前调用）

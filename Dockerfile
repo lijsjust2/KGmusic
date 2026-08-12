@@ -42,9 +42,10 @@ ENV PORT=6521
 ENV HOST=0.0.0.0
 ENV FNOS_ENV=false
 ENV DOWNLOAD_DIR=/app/downloads
+ENV APP_DATA_DIR=/app/data
 
 # Create download directory (fnOS shared folder mount point)
-RUN mkdir -p /app/downloads
+RUN mkdir -p /app/downloads /app/data
 
 # Use entrypoint script
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

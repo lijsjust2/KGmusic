@@ -8,3 +8,7 @@ services:
     ports: # 端口映射
       - "8880:8880"  # 移动端服务
       - "6521:6521"  # 接口服务
+    volumes:
+      - kgmusic-data:/app/data  # 持久化内部数据（日志、登录态）
+volumes:
+  kgmusic-data:
