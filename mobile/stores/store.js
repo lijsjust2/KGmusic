@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import axios from 'axios';
 import { getApiBaseUrl } from '../utils/apiBaseUrl';
-import { get as apiGet } from '../utils/request';
+import { get as apiGet, post as apiPost } from '../utils/request';
 
 const registerDeviceApi = axios.create({
     baseURL: getApiBaseUrl(),
@@ -66,6 +66,38 @@ export const MoeAuthStore = defineStore('MoeData', {
             localStorage.removeItem('collectedPlaylists');
             localStorage.removeItem('t');
         },
+        // ===== 后端集中管理登录态（多设备共享 token，避免互踢）=====
+        // 登录成功后把 token 存到后端
+        async saveTokenToServer() {
+            try {
+                await apiPost('/auth/save', {
+                    userInfo: this.UserInfo,
+                    device: this.Device,
+                });
+            } catch (e) {
+                console.warn('[AUTH] 保存 token 到后端失败:', e?.message);
+            }
+        },
+        // 从后端拉取共享 token（启动时调用）
+        async fetchTokenFromServer() {
+            try {
+                const res = await apiGet('/auth/get');
+                if (res?.status === 1 && res?.data?.userInfo?.token) {
+                    return res.data;
+                }
+            } catch (e) {
+                console.warn('[AUTH] 从后端拉取 token 失败:', e?.message);
+            }
+            return null;
+        },
+        // 退出登录时清空后端存储
+        async clearTokenOnServer() {
+            try {
+                await apiPost('/auth/clear');
+            } catch (e) {
+                console.warn('[AUTH] 清空后端 token 失败:', e?.message);
+            }
+        },
         clearData() {
             this.clearUserData();
         },
@@ -87,6 +119,8 @@ export const MoeAuthStore = defineStore('MoeData', {
             if (response?.status === 1 && response?.data?.token) {
                 const updated = { ...this.UserInfo, ...response.data, token: response.data.token };
                 this.UserInfo = updated;
+                // 刷新成功后同步到后端，让所有设备共享新 token
+                this.saveTokenToServer();
                 return updated;
             }
             return null;

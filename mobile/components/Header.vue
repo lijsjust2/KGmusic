@@ -84,8 +84,9 @@ const refreshPage = () => {
 const logout = async () => {
     const result = await window.$modal.confirm(t('ni-que-ren-yao-tui-chu-deng-lu-ma'));
     if (result) {
+        await MoeAuth.clearTokenOnServer();
         MoeAuth.clearData();
-        router.push({ path: '/' });   
+        router.push({ path: '/' });
     }
 }
 const showProfile = ref(false);

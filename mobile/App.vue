@@ -81,6 +81,20 @@ onMounted(async () => {
   const MoeAuth = MoeAuthStore()
   await MoeAuth.initDevice()
 
+  // 后端集中管理登录态：先从后端拉取共享 token
+  // 如果后端有 token（其它设备登录过），用它替换本地，实现多设备共享
+  const serverAuth = await MoeAuth.fetchTokenFromServer()
+  if (serverAuth?.userInfo?.token) {
+    // 后端有 token，且与本地不同时更新本地
+    if (MoeAuth.UserInfo?.token !== serverAuth.userInfo.token) {
+      console.log('[App] 从后端同步共享 token')
+      MoeAuth.UserInfo = serverAuth.userInfo
+      if (serverAuth.device && !MoeAuth.Device) {
+        MoeAuth.Device = serverAuth.device
+      }
+    }
+  }
+
   if (MoeAuth.UserInfo?.token) {
     // 启动时校验 token：区分"网络错误"和"token 真的失效"
     // 网络错误时保留登录状态（避免飞牛 webview 重新加载+网络抖动导致误退出）
@@ -104,6 +118,7 @@ onMounted(async () => {
           lastTokenRefreshTime = Date.now()
         } else {
           // token 真的失效了，清除并跳转登录
+          await MoeAuth.clearTokenOnServer()
           MoeAuth.clearUserData()
           window.location.hash = '#/login'
         }
@@ -113,6 +128,8 @@ onMounted(async () => {
         lastTokenRefreshTime = Date.now()
       }
     } else {
+      // token 有效，同步到后端（确保后端有最新 token）
+      MoeAuth.saveTokenToServer()
       lastTokenRefreshTime = Date.now()
     }
     // 启动定时预刷新（仅登录用户）

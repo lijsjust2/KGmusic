@@ -142,6 +142,34 @@ async function consturctServer(moduleDefs) {
   const FNOS_ENV = process.env.FNOS_ENV === 'true';
   const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || '';
 
+  // ========== 后端集中管理登录态（单用户，全局共享一个 token）==========
+  // 解决多设备互踢：所有设备共用同一个酷狗 token，后端统一存储和刷新
+  // token 文件放在 DOWNLOAD_DIR（已持久化挂载），容器重启不丢失
+  const AUTH_FILE = path.join(DOWNLOAD_DIR || '/tmp', '.kugou_auth.json');
+
+  const loadStoredAuth = () => {
+    try {
+      const raw = fs.readFileSync(AUTH_FILE, 'utf-8');
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  };
+
+  const saveStoredAuth = (auth) => {
+    try {
+      const dir = path.dirname(AUTH_FILE);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(AUTH_FILE, JSON.stringify(auth, null, 2), 'utf-8');
+    } catch (e) {
+      console.error('[AUTH] 保存 token 文件失败:', e.message);
+    }
+  };
+
+  const clearStoredAuth = () => {
+    try { fs.unlinkSync(AUTH_FILE); } catch {}
+  };
+
   // ========== 酷狗风控 dfid 注册（全局，飞牛与非飞牛环境共用）==========
   // 根因：/song/url 接口必须携带通过 /register/dev 注册的真实 dfid
   // 否则会返回 errcode=20028 status=0 error="本次请求需要验证"
@@ -302,6 +330,29 @@ async function consturctServer(moduleDefs) {
       downloadDir: DOWNLOAD_DIR,
       enabled: FNOS_ENV && !!DOWNLOAD_DIR,
     });
+  });
+
+  // ========== 后端集中管理登录态接口 ==========
+  // GET /auth/get：获取后端存储的 token（所有设备共享）
+  app.get('/auth/get', (req, res) => {
+    const auth = loadStoredAuth();
+    res.json({ status: 1, data: auth });
+  });
+
+  // POST /auth/save：登录成功后存储 token 到后端（所有设备共享）
+  app.post('/auth/save', (req, res) => {
+    const { userInfo, device } = req.body || {};
+    if (!userInfo?.token) {
+      return res.json({ status: 0, msg: '缺少 token' });
+    }
+    saveStoredAuth({ userInfo, device, savedAt: Date.now() });
+    res.json({ status: 1, msg: 'ok' });
+  });
+
+  // POST /auth/clear：退出登录时清空后端存储
+  app.post('/auth/clear', (req, res) => {
+    clearStoredAuth();
+    res.json({ status: 1, msg: 'ok' });
   });
 
   // 仅在飞牛环境下启用服务端下载到共享目录
@@ -985,6 +1036,12 @@ async function consturctServer(moduleDefs) {
             const newToken = data.data.token;
             batch.authHeader = batch.authHeader.replace(/token=[^;]*/i, `token=${newToken}`);
             logDownload(`token refresh 成功，新 token=${newToken.slice(0, 10)}...`);
+            // 同步更新后端存储的 token，让所有设备共享新 token
+            const stored = loadStoredAuth();
+            if (stored?.userInfo) {
+              stored.userInfo = { ...stored.userInfo, ...data.data, token: newToken };
+              saveStoredAuth(stored);
+            }
             return true;
           }
           logDownload(`token refresh 失败：${JSON.stringify(data).slice(0, 200)}`);

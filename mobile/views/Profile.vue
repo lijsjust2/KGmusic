@@ -297,7 +297,8 @@ const goToArtistDetail = (artist) => {
   })
 }
 
-const handleLogout = () => {
+const handleLogout = async () => {
+  await MoeAuth.clearTokenOnServer()
   MoeAuth.clearUserData()
   message.success('已退出登录')
   router.push('/login')

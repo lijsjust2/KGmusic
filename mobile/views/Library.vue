@@ -135,7 +135,8 @@ const selectCategory = (index) => {
 };
 
 // 退出登录
-const handleLogout = () => {
+const handleLogout = async () => {
+    await MoeAuth.clearTokenOnServer();
     MoeAuth.clearUserData();
     router.push('/login');
 };
