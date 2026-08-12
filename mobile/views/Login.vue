@@ -251,7 +251,7 @@ const phoneLogin = async (userid) => {
 
         // 重新注册设备获取新dfid + 强制从服务器获取最新VIP信息
         await MoeAuth.initDevice(true)
-        await MoeAuth.fetchVipInfo()
+        try { await MoeAuth.fetchVipInfo() } catch (e) { console.warn('登录后获取VIP信息失败:', e?.message) }
 
         const redirect = route.query.redirect || '/profile'
         router.push(redirect)
@@ -330,7 +330,7 @@ const startQRCheck = () => {
 
           // 重新注册设备获取新dfid + 强制从服务器获取最新VIP信息
           await MoeAuth.initDevice(true)
-          await MoeAuth.fetchVipInfo()
+          try { await MoeAuth.fetchVipInfo() } catch (e) { console.warn('登录后获取VIP信息失败:', e?.message) }
 
           const redirect = route.query.redirect || '/profile'
           router.push(redirect)

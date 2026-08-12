@@ -71,27 +71,23 @@ export const MoeAuthStore = defineStore('MoeData', {
         },
         async validateToken() {
             if (!this.UserInfo?.token) return false;
-            try {
-                const response = await apiGet('/user/detail');
-                return response?.status === 1;
-            } catch {
-                return false;
-            }
+            // 不再吞掉网络错误：网络异常会抛出，由调用方 catch 区分"网络抖动"和"token 真的失效"
+            // 返回 true=有效，false=token 失效（status!==1），抛出=网络错误
+            const response = await apiGet('/user/detail');
+            return response?.status === 1;
         },
         async refreshToken() {
             if (!this.UserInfo?.token || !this.UserInfo?.userid) return null;
-            try {
-                const response = await apiGet('/login/token', {
-                    token: this.UserInfo.token,
-                    userid: this.UserInfo.userid,
-                });
-                if (response?.status === 1 && response?.data?.token) {
-                    const updated = { ...this.UserInfo, ...response.data, token: response.data.token };
-                    this.UserInfo = updated;
-                    return updated;
-                }
-            } catch {
-                return null;
+            // 不再吞掉网络错误：网络异常会抛出，由调用方 catch 区分
+            // 返回对象=刷新成功，null=token 真的失效（status!==1），抛出=网络错误
+            const response = await apiGet('/login/token', {
+                token: this.UserInfo.token,
+                userid: this.UserInfo.userid,
+            });
+            if (response?.status === 1 && response?.data?.token) {
+                const updated = { ...this.UserInfo, ...response.data, token: response.data.token };
+                this.UserInfo = updated;
+                return updated;
             }
             return null;
         },
@@ -122,6 +118,12 @@ export const MoeAuthStore = defineStore('MoeData', {
             if (response.status === 1) {
                 this.vipInfo = response.data;
                 return response.data;
+            }
+            // status===2 表示登录失效，抛出特定错误让调用方区分"登录失效"和"网络/其它错误"
+            if (response.status === 2) {
+                const err = new Error('LOGIN_EXPIRED');
+                err.code = 'LOGIN_EXPIRED';
+                throw err;
             }
             return null;
         },

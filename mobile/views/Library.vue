@@ -208,8 +208,13 @@ const getVipInfo = async () => {
             getUserDetails();
         }
     } catch (error) {
-        window.$modal.alert(t('deng-lu-shi-xiao-qing-zhong-xin-deng-lu'));
-        router.push('/login');
+        // 只有明确的登录失效（status===2）才跳转登录，网络错误/502 等不退出
+        if (error?.code === 'LOGIN_EXPIRED') {
+            window.$modal.alert(t('deng-lu-shi-xiao-qing-zhong-xin-deng-lu'));
+            router.push('/login');
+        } else {
+            console.warn('获取VIP信息失败:', error?.message);
+        }
     }
 }
 

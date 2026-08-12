@@ -37,9 +37,10 @@ watch(() => musicPlayer.value?.hasCurrentSong, (newValue) => {
 
 // 全局 token 预刷新定时器：每 15 分钟主动 refresh 一次 token
 // 覆盖"用户长时间挂机后操作导致 token 过期"的场景
-// 避免在页面可见性变化或用户恢复操作时才发现 token 过期（那时 refresh 可能已经来不及）
 const TOKEN_REFRESH_INTERVAL_MS = 15 * 60 * 1000  // 15 分钟
+const TOKEN_REFRESH_THRESHOLD_MS = 10 * 60 * 1000  // 切回前台时距上次刷新超过 10 分钟则补偿刷新
 let tokenRefreshTimer = null
+let lastTokenRefreshTime = Date.now()
 
 const startTokenRefreshTimer = () => {
   if (tokenRefreshTimer) clearInterval(tokenRefreshTimer)
@@ -49,11 +50,31 @@ const startTokenRefreshTimer = () => {
       try {
         console.log('[TokenRefresh] 定时预刷新 token')
         await MoeAuth.refreshToken()
+        lastTokenRefreshTime = Date.now()
       } catch (e) {
-        console.warn('[TokenRefresh] 预刷新失败:', e?.message)
+        // 网络错误不退出登录，等下次定时器再试
+        console.warn('[TokenRefresh] 预刷新失败（网络错误），保留登录状态:', e?.message)
       }
     }
   }, TOKEN_REFRESH_INTERVAL_MS)
+}
+
+// visibilitychange：切回前台时补偿刷新 token
+// 解决手机飞牛后台 setInterval 被系统节流导致 token 过期未刷新的问题
+const handleVisibilityChange = async () => {
+  if (document.hidden) return
+  const MoeAuth = MoeAuthStore()
+  if (!MoeAuth.UserInfo?.token || !MoeAuth.UserInfo?.userid) return
+  const elapsed = Date.now() - lastTokenRefreshTime
+  if (elapsed >= TOKEN_REFRESH_THRESHOLD_MS) {
+    try {
+      console.log('[TokenRefresh] 切回前台，补偿刷新 token')
+      await MoeAuth.refreshToken()
+      lastTokenRefreshTime = Date.now()
+    } catch (e) {
+      console.warn('[TokenRefresh] 补偿刷新失败（网络错误），保留登录状态:', e?.message)
+    }
+  }
 }
 
 onMounted(async () => {
@@ -61,17 +82,44 @@ onMounted(async () => {
   await MoeAuth.initDevice()
 
   if (MoeAuth.UserInfo?.token) {
-    const valid = await MoeAuth.validateToken()
-    if (!valid) {
-      const refreshed = await MoeAuth.refreshToken()
-      if (!refreshed) {
-        MoeAuth.clearUserData()
+    // 启动时校验 token：区分"网络错误"和"token 真的失效"
+    // 网络错误时保留登录状态（避免飞牛 webview 重新加载+网络抖动导致误退出）
+    let tokenValid = false
+    let validateNetworkError = false
+    try {
+      tokenValid = await MoeAuth.validateToken()
+    } catch (e) {
+      validateNetworkError = true
+      console.warn('[App] validateToken 网络错误，保留登录状态:', e?.message)
+    }
+
+    if (validateNetworkError) {
+      // 网络错误：假定 token 仍有效，启动定时器等下次再校验
+      lastTokenRefreshTime = Date.now()
+    } else if (!tokenValid) {
+      // token 失效，尝试 refresh
+      try {
+        const refreshed = await MoeAuth.refreshToken()
+        if (refreshed) {
+          lastTokenRefreshTime = Date.now()
+        } else {
+          // token 真的失效了，清除并跳转登录
+          MoeAuth.clearUserData()
+          window.location.hash = '#/login'
+        }
+      } catch (e) {
+        // refresh 网络错误：保留登录状态，启动定时器等下次再试
+        console.warn('[App] refreshToken 网络错误，保留登录状态:', e?.message)
+        lastTokenRefreshTime = Date.now()
       }
+    } else {
+      lastTokenRefreshTime = Date.now()
     }
     // 启动定时预刷新（仅登录用户）
     startTokenRefreshTimer()
   }
 
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   setTimeout(checkPlayerStatus, 100)
 })
 
@@ -80,6 +128,7 @@ onUnmounted(() => {
     clearInterval(tokenRefreshTimer)
     tokenRefreshTimer = null
   }
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>
 
