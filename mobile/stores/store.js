@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 import axios from 'axios';
 import { getApiBaseUrl } from '../utils/apiBaseUrl';
 import { get as apiGet, post as apiPost } from '../utils/request';
+import { detectFnosClientMode } from '../utils/fnos';
 
 const registerDeviceApi = axios.create({
     baseURL: getApiBaseUrl(),
@@ -66,9 +67,11 @@ export const MoeAuthStore = defineStore('MoeData', {
             localStorage.removeItem('collectedPlaylists');
             localStorage.removeItem('t');
         },
-        // ===== 后端集中管理登录态（多设备共享 token，避免互踢）=====
+        // ===== 后端集中管理登录态（仅飞牛环境；浏览器直连用 localStorage 独立管理）=====
         // 登录成功后把 token 存到后端
         async saveTokenToServer() {
+            // 仅飞牛环境（.fpk 内嵌入口）走后端共享 token；浏览器直连不污染后端
+            if (!detectFnosClientMode()) return;
             try {
                 await apiPost('/auth/save', {
                     userInfo: this.UserInfo,
@@ -80,6 +83,8 @@ export const MoeAuthStore = defineStore('MoeData', {
         },
         // 从后端拉取共享 token（启动时调用）
         async fetchTokenFromServer() {
+            // 仅飞牛环境从后端拉取共享 token；浏览器直连返回 null，用本地登录态
+            if (!detectFnosClientMode()) return null;
             try {
                 const res = await apiGet('/auth/get');
                 if (res?.status === 1 && res?.data?.userInfo?.token) {
@@ -92,6 +97,8 @@ export const MoeAuthStore = defineStore('MoeData', {
         },
         // 退出登录时清空后端存储
         async clearTokenOnServer() {
+            // 仅飞牛环境清空后端共享 token；浏览器直连只清本地 localStorage
+            if (!detectFnosClientMode()) return;
             try {
                 await apiPost('/auth/clear');
             } catch (e) {
