@@ -431,6 +431,11 @@ const excludeLive = ref(localStorage.getItem('download_exclude_live') !== 'false
 const excludeNoCompany = ref(localStorage.getItem('download_exclude_no_company') !== 'false');
 const excludeDuplicate = ref(localStorage.getItem('download_exclude_duplicate') !== 'false');
 const excludeInstrumental = ref(localStorage.getItem('download_exclude_instrumental') !== 'false');
+const excludeDJ = ref(localStorage.getItem('download_exclude_dj') !== 'false');
+const excludeRemix = ref(localStorage.getItem('download_exclude_remix') !== 'false');
+const excludeClip = ref(localStorage.getItem('download_exclude_clip') !== 'false');
+const excludeCustomKeywords = ref(localStorage.getItem('download_exclude_custom_keywords') === 'true');
+const customKeywords = ref(localStorage.getItem('download_custom_keywords') || '');
 const dateFrom = ref(localStorage.getItem('download_date_from') || '');
 const dateTo = ref(localStorage.getItem('download_date_to') || '');
 const querying = ref(false);
