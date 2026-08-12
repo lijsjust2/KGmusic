@@ -19,6 +19,7 @@ import TopNav from './components/TopNav.vue'
 import MusicPlayer from './components/MusicPlayer.vue'
 import FloatingTaskWidget from './components/FloatingTaskWidget.vue'
 import { MoeAuthStore } from './stores/store'
+import { detectFnosClientMode } from './utils/fnos'
 
 const musicPlayer = ref(null)
 const paddingBottom = ref(0)
@@ -81,14 +82,21 @@ onMounted(async () => {
   const MoeAuth = MoeAuthStore()
   await MoeAuth.initDevice()
 
-  // 后端集中管理登录态：先从后端拉取共享 token
-  // 如果后端有 token（其它设备登录过），用它替换本地，实现多设备共享
+  // 后端集中管理登录态：先从后端拉取共享 token + device
+  // 飞牛环境：token 和 device 必须一致，否则 dfid 不同会导致歌单/歌数返回不一致
   const serverAuth = await MoeAuth.fetchTokenFromServer()
   if (serverAuth?.userInfo?.token) {
-    // 后端有 token，且与本地不同时更新本地
+    // 飞牛环境：device 直接用后端的覆盖，保证所有飞牛端 dfid/mid/guid 完全相同
+    if (detectFnosClientMode() && serverAuth.device) {
+      console.log('[App] 从后端同步共享 device（dfid等）')
+      MoeAuth.Device = serverAuth.device
+    }
+
+    // token 不同时更新本地
     if (MoeAuth.UserInfo?.token !== serverAuth.userInfo.token) {
       console.log('[App] 从后端同步共享 token')
       MoeAuth.UserInfo = serverAuth.userInfo
+      // 非飞牛环境或后端没 device 时才走兜底：本地无 device 时补一个
       if (serverAuth.device && !MoeAuth.Device) {
         MoeAuth.Device = serverAuth.device
       }

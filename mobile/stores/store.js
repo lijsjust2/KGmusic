@@ -146,6 +146,11 @@ export const MoeAuthStore = defineStore('MoeData', {
                 const device = response?.data?.data;
                 if (device) {
                     this.Device = device;
+                    // 飞牛环境：注册新 device（尤其是 forceRefresh 刷新 dfid 后）立即同步到后端
+                    // 保证所有飞牛端共享同一套 dfid/mid/guid，避免酷狗返回数据不一致
+                    if (detectFnosClientMode()) {
+                        this.saveTokenToServer();
+                    }
                     return device;
                 }
             } catch (error) {
