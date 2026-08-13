@@ -73,6 +73,31 @@ httpClient.interceptors.response.use(
             if (status === 401) {
                 const MoeAuth = MoeAuthStore();
 
+                // 飞牛模式：后端中间层负责 token 生命周期，前端绝不自己判断失效/清数据/跳登录
+                // 如果收到 401，说明后端共享 token 可能刚 refresh 过，前端本地是旧的
+                // 从后端 /auth/status 重新同步最新 token，然后重试一次
+                if (detectFnosClientMode()) {
+                    if (error.config?._fnosRetry) {
+                        // 已重试过一次，不再重试，但不清理登录态（后端可能是临时故障）
+                        console.warn('[401] 飞牛模式重试后仍 401，保留登录态不退出');
+                        return Promise.reject(error);
+                    }
+                    try {
+                        const serverAuth = await MoeAuth.fetchTokenFromServer();
+                        if (serverAuth?.userInfo?.token) {
+                            MoeAuth.UserInfo = serverAuth.userInfo;
+                            if (serverAuth.device) MoeAuth.Device = serverAuth.device;
+                            const retryConfig = { ...error.config, _fnosRetry: true };
+                            return httpClient(retryConfig);
+                        }
+                    } catch (syncErr) {
+                        console.warn('[401] 飞牛模式同步后端 token 失败:', syncErr?.message);
+                    }
+                    // 同步失败也不退出登录，让用户保持登录态
+                    return Promise.reject(error);
+                }
+
+                // 浏览器直连模式：原有逻辑
                 if (error.config?._retry) {
                     MoeAuth.clearUserData();
                     message.error('登录已失效，请重新登录');
@@ -84,24 +109,18 @@ httpClient.interceptors.response.use(
                     // refresh 最多尝试 2 次（应对网络波动导致首次 refresh 失败）
                     for (let refreshAttempt = 0; refreshAttempt < 2; refreshAttempt++) {
                         try {
-                            // 复用 MoeAuth.refreshToken()：它用 apiGet（httpClient），
-                            // 会带完整的 Authorization header（含 dfid、KUGOU_API_GUID/MAC/DEV 等），
-                            // login_token.js 在 lite 模式下需要这些参数生成 t2 加密
                             const refreshed = await MoeAuth.refreshToken();
                             if (refreshed) {
                                 const retryConfig = { ...error.config, _retry: true };
                                 return httpClient(retryConfig);
                             }
-                            // refresh 返回 null（status!=1）说明 token 真的失效了，不再重试
                             break;
                         } catch (refreshErr) {
-                            // 网络异常才重试，其它错误直接放弃
                             const isNetworkError = !refreshErr?.response;
                             if (!isNetworkError || refreshAttempt === 1) {
                                 console.warn('[401] refresh token 失败:', refreshErr?.message);
                                 break;
                             }
-                            // 网络波动，等 1 秒重试一次
                             console.warn('[401] refresh token 网络异常，1 秒后重试:', refreshErr?.message);
                             await new Promise(r => setTimeout(r, 1000));
                         }
@@ -123,10 +142,16 @@ httpClient.interceptors.response.use(
                     return Promise.reject(error);
                 }
 
-                // 酷狗风控：errcode=20028 说明 dfid(设备ID)失效 → 强制重新注册设备后重试一次
+                // 酷狗风控：errcode=20028 说明 dfid(设备ID)失效
                 const needVerify = errcode === 20028 ||
                     (typeof errorMsg === 'string' && errorMsg.includes('需要验证'));
                 if (needVerify && !error.config?._dfidRetry) {
+                    // 飞牛模式：后端中间层会自动刷新 dfid 并注入共享 device，前端不自己刷
+                    // （前端刷会覆盖后端共享 device，导致其他飞牛端 device 不一致）
+                    if (detectFnosClientMode()) {
+                        const retryConfig = { ...error.config, _dfidRetry: true };
+                        return httpClient(retryConfig);
+                    }
                     try {
                         const MoeAuth = MoeAuthStore();
                         // 先清空旧 Device，再强制重新注册获取新 dfid

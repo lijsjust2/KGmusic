@@ -179,8 +179,15 @@ export const MoeAuthStore = defineStore('MoeData', {
                 this.vipInfo = response.data;
                 return response.data;
             }
-            // status===2 表示登录失效，抛出特定错误让调用方区分"登录失效"和"网络/其它错误"
+            // status===2 表示登录失效
             if (response.status === 2) {
+                // 飞牛模式：后端中间层负责 token 生命周期，不抛 LOGIN_EXPIRED
+                // （避免前端误判 token 失效后跳转登录页，后端会自动 refresh）
+                if (detectFnosClientMode()) {
+                    console.warn('[fetchVipInfo] 飞牛模式收到 status==2，忽略不退出登录');
+                    return null;
+                }
+                // 浏览器直连：抛出特定错误让调用方跳转登录
                 const err = new Error('LOGIN_EXPIRED');
                 err.code = 'LOGIN_EXPIRED';
                 throw err;

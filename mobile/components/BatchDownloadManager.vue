@@ -128,7 +128,7 @@ import {
     getFileExtension,
     getQualityDescription
 } from '../utils/qualityConfig';
-import { checkFnosEnv, getFnosStatus, downloadToFnos, addToDownloadQueue } from '../utils/fnos';
+import { checkFnosEnv, getFnosStatus, downloadToFnos, addToDownloadQueue, detectFnosClientMode } from '../utils/fnos';
 import { getPushplusToken } from '../utils/pushplus';
 import message from '../utils/message';
 
@@ -461,8 +461,9 @@ const handleQualitySelect = async (quality) => {
             break;
         }
 
-        // token 预刷新：每 N 首歌或超过 20 分钟主动 refresh 一次，避免 token 过期导致下载完成后退出登录
-        if (MoeAuth.isAuthenticated && (i > 0 && i % TOKEN_REFRESH_INTERVAL === 0 || Date.now() - lastTokenRefreshAt > 20 * 60 * 1000)) {
+        // token 预刷新：浏览器直连模式每 N 首歌或超过 20 分钟主动 refresh 一次
+        // 飞牛模式跳过：后端中间层会在请求遇到 status==2 时自动 refresh
+        if (!detectFnosClientMode() && MoeAuth.isAuthenticated && (i > 0 && i % TOKEN_REFRESH_INTERVAL === 0 || Date.now() - lastTokenRefreshAt > 20 * 60 * 1000)) {
             try {
                 console.log('[BatchDownload] 预刷新 token，已完成', i, '首');
                 await MoeAuth.refreshToken();
