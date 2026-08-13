@@ -149,22 +149,53 @@ async function consturctServer(moduleDefs) {
   // token 文件放在 APP_DATA_DIR（独立持久化挂载），容器重启不丢失
   const AUTH_FILE = path.join(APP_DATA_DIR, '.kugou_auth.json');
 
+  // 简单自旋锁：避免并发 saveStoredAuth（批处理+通用路由+前端同时刷新token）导致半写 JSON
+  let _authFileLock = Promise.resolve();
+  const lockAuthFile = () => {
+    let release;
+    const next = new Promise(r => { release = r; });
+    const cur = _authFileLock;
+    _authFileLock = cur.then(() => next);
+    return cur.then(() => release);
+  };
+
   const loadStoredAuth = () => {
     try {
       const raw = fs.readFileSync(AUTH_FILE, 'utf-8');
-      return JSON.parse(raw);
-    } catch {
+      if (!raw || raw.trim().length === 0) return null;
+      const parsed = JSON.parse(raw);
+      // 基本字段校验：避免读到半写的损坏 JSON 也认为合法
+      if (parsed && parsed.userInfo && typeof parsed.userInfo.token === 'string') {
+        return parsed;
+      }
+      console.warn('[AUTH] 读取到的 auth 文件缺少 userInfo.token 字段，忽略');
+      return null;
+    } catch (e) {
+      if (e.code !== 'ENOENT') {
+        console.warn('[AUTH] 读取 token 文件失败（可能是并发写入半写 JSON，忽略）：', e.message);
+      }
       return null;
     }
   };
 
-  const saveStoredAuth = (auth) => {
+  const saveStoredAuth = async (auth) => {
+    // 基本校验：禁止写空 token（防止误删逻辑覆盖到共享文件）
+    if (!auth || !auth.userInfo || typeof auth.userInfo.token !== 'string' || !auth.userInfo.token) {
+      console.error('[AUTH] 拒绝保存空 token！caller:', new Error().stack?.split('\n')?.slice(2, 4)?.join(' | '));
+      return;
+    }
+    const release = await lockAuthFile();
     try {
       const dir = path.dirname(AUTH_FILE);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(AUTH_FILE, JSON.stringify(auth, null, 2), 'utf-8');
+      // 原子写：先写临时文件再 rename，避免并发读拿到半截 JSON
+      const tmpFile = AUTH_FILE + '.tmp';
+      fs.writeFileSync(tmpFile, JSON.stringify(auth, null, 2), 'utf-8');
+      fs.renameSync(tmpFile, AUTH_FILE);
     } catch (e) {
       console.error('[AUTH] 保存 token 文件失败:', e.message);
+    } finally {
+      release();
     }
   };
 
@@ -398,7 +429,7 @@ async function consturctServer(moduleDefs) {
   });
 
   // POST /auth/save：登录成功后存储 token 到后端（仅飞牛请求允许保存，浏览器禁止写共享态）
-  app.post('/auth/save', (req, res) => {
+  app.post('/auth/save', async (req, res) => {
     if (!isFnosRequest(req)) {
       return res.json({ status: 0, msg: '仅飞牛客户端允许保存共享 token' });
     }
@@ -406,7 +437,7 @@ async function consturctServer(moduleDefs) {
     if (!userInfo?.token) {
       return res.json({ status: 0, msg: '缺少 token' });
     }
-    saveStoredAuth({ userInfo, device, savedAt: Date.now() });
+    await saveStoredAuth({ userInfo, device, savedAt: Date.now() });
     res.json({ status: 1, msg: 'ok' });
   });
 
@@ -1104,7 +1135,7 @@ async function consturctServer(moduleDefs) {
             const stored = loadStoredAuth();
             if (stored?.userInfo) {
               stored.userInfo = { ...stored.userInfo, ...data.data, token: newToken };
-              saveStoredAuth(stored);
+              await saveStoredAuth(stored);
             }
             return true;
           }
@@ -1674,7 +1705,7 @@ async function consturctServer(moduleDefs) {
                   // 更新共享存储
                   stored.userInfo = { ...stored.userInfo, ...data.data, token: newToken };
                   stored.savedAt = Date.now();
-                  saveStoredAuth(stored);
+                  await saveStoredAuth(stored);
                   // 更新 query.cookie 中的 token/userid（走之前 cookieToJson 流程，已经在 query.cookie 里的字段直接覆盖）
                   query.cookie.token = newToken;
                   if (data.data.userid) query.cookie.userid = data.data.userid;

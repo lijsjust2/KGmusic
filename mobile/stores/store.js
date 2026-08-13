@@ -111,15 +111,29 @@ export const MoeAuthStore = defineStore('MoeData', {
         },
         async validateToken() {
             if (!this.UserInfo?.token) return false;
-            // 不再吞掉网络错误：网络异常会抛出，由调用方 catch 区分"网络抖动"和"token 真的失效"
-            // 返回 true=有效，false=token 失效（status!==1），抛出=网络错误
+            if (detectFnosClientMode()) {
+                // 飞牛模式：完全信任后端中间层，/auth/status 返回了 token 就视为有效
+                // 中间层会在请求遇到 status==2 时自动 refresh token，前端无需自行校验
+                // 这样避免了"前端拿旧 token 校验失败 → 误删后端刚刷新好的新 token"竞态
+                return true;
+            }
+            // 浏览器直连：正常调用 /user/detail 校验
             const response = await apiGet('/user/detail');
             return response?.status === 1;
         },
         async refreshToken() {
             if (!this.UserInfo?.token || !this.UserInfo?.userid) return null;
-            // 不再吞掉网络错误：网络异常会抛出，由调用方 catch 区分
-            // 返回对象=刷新成功，null=token 真的失效（status!==1），抛出=网络错误
+            if (detectFnosClientMode()) {
+                // 飞牛模式：从后端 /auth/status 拉最新 token（中间层已经自动处理过refresh）
+                const serverAuth = await this.fetchTokenFromServer();
+                if (serverAuth?.userInfo?.token) {
+                    this.UserInfo = serverAuth.userInfo;
+                    if (serverAuth.device) this.Device = serverAuth.device;
+                    return serverAuth.userInfo;
+                }
+                return null;
+            }
+            // 浏览器直连：正常调 /login/token
             const response = await apiGet('/login/token', {
                 token: this.UserInfo.token,
                 userid: this.UserInfo.userid,
@@ -127,7 +141,6 @@ export const MoeAuthStore = defineStore('MoeData', {
             if (response?.status === 1 && response?.data?.token) {
                 const updated = { ...this.UserInfo, ...response.data, token: response.data.token };
                 this.UserInfo = updated;
-                // 刷新成功后同步到后端，让所有设备共享新 token
                 this.saveTokenToServer();
                 return updated;
             }
