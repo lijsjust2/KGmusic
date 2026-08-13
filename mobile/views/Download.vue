@@ -1086,6 +1086,22 @@ onMounted(() => {
     loadDownloadPathName();
 });
 
+// 聚合 queryStatus 更新：避免每个专辑完成都修改一次响应式状态触发 DOM 更新
+let _pendingQueryStatus = null;
+let _queryStatusRafScheduled = false;
+const setQueryStatus = (text) => {
+    _pendingQueryStatus = text;
+    if (_queryStatusRafScheduled) return;
+    _queryStatusRafScheduled = true;
+    requestAnimationFrame(() => {
+        _queryStatusRafScheduled = false;
+        if (_pendingQueryStatus !== null) {
+            queryStatus.value = _pendingQueryStatus;
+            _pendingQueryStatus = null;
+        }
+    });
+};
+
 // 后台加载所有专辑的歌曲
 const loadAlbumSongsInBackground = async (rawAlbums) => {
     let loadedCount = 0;
@@ -1093,11 +1109,12 @@ const loadAlbumSongsInBackground = async (rawAlbums) => {
     const albumsToRemove = []; // 需要从列表中移除的专辑（全部歌曲被过滤）
     
     const updateAlbumSongCount = (albumId, count) => {
+        // 原地修改 albums.value 元素的属性，避免 [...albums.value] 重建数组
+        // （重建会触发所有依赖 albums 的 computed/watch 重算，93个专辑会造成 O(n²) 渲染压力）
         const idx = albums.value.findIndex(a => String(a.album_id) === String(albumId));
         if (idx !== -1) {
-            const updated = [...albums.value];
-            updated[idx] = { ...updated[idx], songCount: count };
-            albums.value = updated;
+            // Vue3 ref 包裹的数组元素是 reactive 对象，直接赋值属性可被追踪
+            albums.value[idx].songCount = count;
         }
     };
     
@@ -1105,10 +1122,32 @@ const loadAlbumSongsInBackground = async (rawAlbums) => {
     const removeFromSelected = (albumId) => {
         const key = String(albumId);
         if (selectedAlbums.value.has(key)) {
+            // Set 不支持原地删除后保留引用追踪，重新 new Set 一次（每次删除最多一次，数量很少）
             const set = new Set(selectedAlbums.value);
             set.delete(key);
             selectedAlbums.value = set;
         }
+    };
+    
+    // 专辑歌曲 Map 批量更新：积累 N 个再一次性替换引用，避免每次 Map.set 触发 selectedSongList 重算
+    // 因为 ref + Map 在 Vue3 里需要整体替换引用才能触发 computed，因此用累加 pendingMap 的策略
+    let _pendingMapEntries = []; // [key, value][]
+    let _mapFlushScheduled = false;
+    const flushAlbumSongMap = () => {
+        if (_pendingMapEntries.length === 0) return;
+        const newMap = new Map(albumSongMap.value);
+        for (const [k, v] of _pendingMapEntries) {
+            newMap.set(k, v);
+        }
+        albumSongMap.value = newMap;
+        _pendingMapEntries = [];
+        _mapFlushScheduled = false;
+    };
+    const scheduleAlbumSongMapFlush = () => {
+        if (_mapFlushScheduled) return;
+        _mapFlushScheduled = true;
+        // 用 setTimeout(0) 合并同一事件循环中多个专辑同时完成的情况
+        setTimeout(flushAlbumSongMap, 0);
     };
     
     await parallelLimit(
@@ -1126,22 +1165,21 @@ const loadAlbumSongsInBackground = async (rawAlbums) => {
                 albumsToRemove.push(albumKey);
                 removeFromSelected(albumKey);
                 loadedCount++;
-                queryStatus.value = `歌曲信息加载中 (${loadedCount}/${total})`;
+                setQueryStatus(`歌曲信息加载中 (${loadedCount}/${total})`);
                 const reason = removedCount > 0 ? `（${removedCount}首被过滤规则排除）` : '（无有效歌曲）';
                 addLog(`  ✗ ${album.album_name}: 已隐藏 ${reason}`, 'warning', 'fas fa-filter');
                 return;
             }
             
-            // 存储过滤后的歌曲
-            const map = new Map(albumSongMap.value);
-            map.set(albumKey, filteredSongs);
-            albumSongMap.value = map;
+            // 不立即替换 Map 引用，先加入 pending 合并刷新
+            _pendingMapEntries.push([albumKey, filteredSongs]);
+            scheduleAlbumSongMapFlush();
             
             // 更新显示为过滤后的歌曲数量
             updateAlbumSongCount(album.album_id, filteredSongs.length);
             
             loadedCount++;
-            queryStatus.value = `歌曲信息加载中 (${loadedCount}/${total})`;
+            setQueryStatus(`歌曲信息加载中 (${loadedCount}/${total})`);
             
             if (removedCount > 0) {
                 addLog(`  ✓ ${album.album_name}: ${filteredSongs.length} 首（已过滤${removedCount}首）`, 'success', 'fas fa-check');
@@ -1151,6 +1189,9 @@ const loadAlbumSongsInBackground = async (rawAlbums) => {
         }),
         5
     );
+    
+    // 最后确保还有 pending 的 Map 条目被 flush
+    flushAlbumSongMap();
     
     // 全部加载完成后，移除所有有效歌曲为0的专辑
     if (albumsToRemove.length > 0) {
@@ -1169,7 +1210,7 @@ const loadAlbumSongsInBackground = async (rawAlbums) => {
     for (const songs of albumSongMap.value.values()) {
         totalSongs += songs.length;
     }
-    queryStatus.value = `加载完成，共 ${totalSongs} 首歌曲`;
+    setQueryStatus(`加载完成，共 ${totalSongs} 首歌曲`);
     addLog(`✅ 全部加载完成，共 ${albums.value.length} 个专辑 / ${totalSongs} 首歌曲`, 'success', 'fas fa-check-circle');
 };
 

@@ -121,6 +121,11 @@ onMounted(async () => {
         MoeAuth.Device = serverAuth.device
       }
     }
+  } else if (detectFnosClientMode() && serverAuth?.noSharedAuth && MoeAuth.UserInfo?.token) {
+    // 飞牛模式边界场景：后端确认没有共享 token（非网络错误），但本地 localStorage 有（浏览器模式遗留）
+    // 必须清掉，否则前端以为已登录，但后端中间件没 auth 注入，所有请求都会失败
+    console.log('[App] 飞牛模式：后端无共享 token，清除本地遗留登录态')
+    MoeAuth.clearUserData()
   }
 
   if (MoeAuth.UserInfo?.token) {

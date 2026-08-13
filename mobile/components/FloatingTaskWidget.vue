@@ -183,10 +183,13 @@ import message from '../utils/message';
 // 整个组件不做任何事：不启动轮询、不显示悬浮窗、不监听事件
 const _isFnosClient = detectFnosClientMode();
 
-// 轮询频率：有任务时高频，无任务时空闲低频，避免无意义刷接口
-const POLL_ACTIVE_MS = 3000;   // 有任务 / 悬浮窗显示中：3 秒
+// 轮询频率：有任务时中高频，无任务时空闲低频，避免无意义刷接口
+// 手机飞牛 WebView 对 HTTP 请求调度单线程，轮询间隔 < 5s 容易和用户交互请求（专辑/歌单/下载队列）排队阻塞
+const POLL_ACTIVE_MS = 5000;   // 有任务 / 悬浮窗显示中：5 秒
 const POLL_IDLE_MS = 30000;   // 无任务且悬浮窗不显示：30 秒
 const IDLE_STOP_AFTER = 20;   // 连续 20 次（约 10 分钟）都空闲 → 停止轮询，等事件唤醒
+// 最近完成日志输出：只在开发环境输出，生产环境 WebView console I/O 极慢，100条x5次打印直接冻主线程
+const PRINT_RECENT_LOGS = import.meta.env?.DEV ?? false;
 
 const status = ref(null);
 const panelOpen = ref(false);
@@ -262,21 +265,27 @@ const fetchStatus = async () => {
         consecutiveErrors = 0;
 
         // 检查 recent 中新完成的任务，输出后端日志到控制台
-        const recent = data.recent || [];
-        for (const task of recent) {
-            if (task.logs && task.logs.length > 0 && !printedLogTaskIds.has(task.id)) {
-                printedLogTaskIds.add(task.id);
-                const songName = task.song?.name || '未知歌曲';
-                const author = task.song?.author || '未知歌手';
-                const statusText = task.status === 'success' ? '✓ 成功' : '✗ 失败';
-                console.log(`%c[FNOS 批量下载] ${statusText} ${songName} - ${author}`, 'color: #667eea; font-weight: bold');
-                console.log('%c──────────────────────────', 'color: #ddd');
-                task.logs.forEach(line => console.log(`%c  ${line}`, 'color: #764ba2'));
-                console.log('%c──────────────────────────', 'color: #ddd');
-                // 清理 Set 防止无限增长（保留最近 500 个）
-                if (printedLogTaskIds.size > 500) {
-                    printedLogTaskIds = new Set([...printedLogTaskIds].slice(-500));
+        // —— 仅在开发环境（import.meta.env.DEV）输出：
+        //    生产环境手机飞牛 WebView 的 console I/O 极慢，
+        //    100 条任务 × 5 次 console.log 会阻塞主线程几十毫秒，
+        //    叠加用户操作（翻页/点击/查询专辑）时容易造成界面卡死。
+        if (PRINT_RECENT_LOGS) {
+            const recent = data.recent || [];
+            for (const task of recent) {
+                if (task.logs && task.logs.length > 0 && !printedLogTaskIds.has(task.id)) {
+                    printedLogTaskIds.add(task.id);
+                    const songName = task.song?.name || '未知歌曲';
+                    const author = task.song?.author || '未知歌手';
+                    const statusText = task.status === 'success' ? '✓ 成功' : '✗ 失败';
+                    console.log(`%c[FNOS 批量下载] ${statusText} ${songName} - ${author}`, 'color: #667eea; font-weight: bold');
+                    console.log('%c──────────────────────────', 'color: #ddd');
+                    task.logs.forEach(line => console.log(`%c  ${line}`, 'color: #764ba2'));
+                    console.log('%c──────────────────────────', 'color: #ddd');
                 }
+            }
+            // 清理 Set 防止无限增长（保留最近 500 个）—— 仍然只在 DEV 下维护
+            if (printedLogTaskIds.size > 500) {
+                printedLogTaskIds = new Set([...printedLogTaskIds].slice(-500));
             }
         }
 

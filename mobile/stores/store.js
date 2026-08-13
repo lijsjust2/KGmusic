@@ -84,12 +84,20 @@ export const MoeAuthStore = defineStore('MoeData', {
         // 从后端拉取共享 token（启动时调用）
         // 飞牛模式：调 /auth/status（同时返回 isSharedAuth 标识），拿到 token+device
         // 浏览器直连：返回 null，登录态完全由 localStorage 管理
+        // 返回值：
+        //   { userInfo, device } — 后端有共享 token
+        //   { noSharedAuth: true } — 后端确认没有共享 token（用于区分网络错误）
+        //   null — 非飞牛模式 或 网络错误
         async fetchTokenFromServer() {
             if (!detectFnosClientMode()) return null;
             try {
                 const res = await apiGet('/auth/status');
-                if (res?.status === 1 && res?.isSharedAuth && res?.data?.userInfo?.token) {
-                    return res.data;
+                if (res?.status === 1 && res?.isSharedAuth) {
+                    if (res?.data?.userInfo?.token) {
+                        return res.data;
+                    }
+                    // 后端确认是飞牛请求，但没有共享 token
+                    return { noSharedAuth: true };
                 }
             } catch (e) {
                 console.warn('[AUTH] 从后端拉取 token 失败:', e?.message);

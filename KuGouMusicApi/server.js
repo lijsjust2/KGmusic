@@ -1492,6 +1492,8 @@ async function consturctServer(moduleDefs) {
       batches.forEach((batch, batchId) => {
         const activeTasks = taskQueue.filter(t => t.batchId === batchId);
         const activeTask = activeTasks.find(t => t.status === 'downloading');
+        // 注意：不返回 batch.albums 完整数组，前端不消费；只返回 albumCount 计数
+        // （albums 是 Set，多时 JSON 序列化极慢，手机 WebView 解析也慢）
         batchesArr.push({
           batchId,
           total: batch.stats.total,
@@ -1505,7 +1507,6 @@ async function consturctServer(moduleDefs) {
           firstAlbumName: batch.firstAlbumName,
           currentSongName: activeTask ? activeTask.song.name : '',
           albumCount: batch.albums.size,
-          albums: Array.from(batch.albums),
         });
       });
       batchesArr.sort((a, b) => b.addedAt - a.addedAt);
@@ -1513,6 +1514,17 @@ async function consturctServer(moduleDefs) {
       // 全局统计用 globalCounter（不依赖 taskHistory）
       const totalSuccess = globalCounter.totalSuccess;
       const totalFailed = globalCounter.totalFailed;
+
+      // 精简 song 对象：只返回前端渲染需要的字段，避免 pending 数量多时序列化 + 解析巨大 JSON
+      const trimSong = (song) => {
+        if (!song) return null;
+        return {
+          name: song.name || '',
+          author: song.author || song.singer_name || '',
+          albumName: song.albumName || song.album_name || '',
+          hash: song.hash || '',
+        };
+      };
 
       res.json({
         code: 0,
@@ -1524,9 +1536,11 @@ async function consturctServer(moduleDefs) {
           historyCount: taskHistory.length,
           totalSuccess,
           totalFailed,
-          active: active.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality, startedAt: t.startedAt })),
-          pending: pending.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality })),
-          recent: recent.map(t => ({ id: t.id, batchId: t.batchId, song: t.song, quality: t.quality, status: t.status, error: t.error, path: t.path, finishedAt: t.finishedAt, logs: t.logs || [] })),
+          active: active.map(t => ({ id: t.id, batchId: t.batchId, song: trimSong(t.song), quality: t.quality, startedAt: t.startedAt })),
+          // pending 列表在队列大（1000+首）时极占带宽，前端不消费单条 pending 明细，只给计数即可
+          // 如果后续前端需要展示明细列表，可按需裁剪字段后再开启
+          pending: [],
+          recent: recent.map(t => ({ id: t.id, batchId: t.batchId, song: trimSong(t.song), quality: t.quality, status: t.status, error: t.error, finishedAt: t.finishedAt })),
           batches: batchesArr,
         },
       });
